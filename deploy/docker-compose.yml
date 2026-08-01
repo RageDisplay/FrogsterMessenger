@@ -1,0 +1,38 @@
+name: frogster
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: frogster
+      POSTGRES_PASSWORD: frogster
+      POSTGRES_DB: frogster
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U frogster -d frogster"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      # Published on 16379 rather than 6379: Windows reserves 6322-6421 for
+      # Hyper-V/WSL, and Docker cannot bind inside a reserved range even though
+      # nothing is listening there. Override with REDIS_PORT if 16379 clashes.
+      - "${REDIS_PORT:-16379}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:

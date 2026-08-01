@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package frogster.v1;
+
+option go_package = "github.com/vectrixsecurity/frogster/server/internal/gen/frogsterv1;frogsterv1";
+
+// FileTransfer moves encrypted attachments.
+//
+// Every byte that reaches this service is already ciphertext: the client
+// encrypts a file with a fresh AES-256-GCM key before the first chunk is sent,
+// and delivers that key to recipients inside the Double Ratchet payload of the
+// chat message. The server therefore stores blobs it cannot read and never
+// learns the file's type, name, or contents.
+//
+// Streaming rather than a single request keeps memory flat: a 100 MiB upload
+// costs one chunk buffer, not 100 MiB, on both client and server.
+service FileTransfer {
+  // Upload streams an encrypted blob and returns its id.
+  rpc Upload(stream UploadRequest) returns (UploadResponse);
+
+  // Download streams an encrypted blob back.
+  rpc Download(DownloadRequest) returns (stream DownloadChunk);
+
+  // Delete removes a blob the caller uploaded.
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+}
+
+message UploadRequest {
+  oneof payload {
+    // Sent once, before any chunk.
+    UploadInit init = 1;
+    // Ciphertext. Never plaintext.
+    bytes chunk = 2;
+  }
+}
+
+message UploadInit {
+  // Size of the ciphertext, used to reject oversized uploads before streaming
+  // them and to enforce per-user quota.
+  uint64 total_size = 1;
+
+  // Routing intent only ("attachment"). Deliberately not the real MIME type:
+  // that would tell the server whether it is storing a photo, a document or a
+  // recording.
+  string content_hint = 2;
+
+  // SHA-256 of the complete ciphertext. The recipient verifies this before
+  // decrypting, so a tampered blob is rejected without being fed to the
+  // cipher.
+  bytes digest = 3;
+}
+
+message UploadResponse {
+  string blob_id = 1;
+
+  // When the server will garbage-collect the blob. Attachments are not kept
+  // forever: retention is capped so an abandoned upload does not persist
+  // indefinitely.
+  int64 expires_at = 2;
+
+  uint64 stored_size = 3;
+}
+
+message DownloadRequest {
+  string blob_id = 1;
+}
+
+message DownloadChunk {
+  bytes chunk = 1;
+
+  // Offset of this chunk, so a client can resume or verify ordering.
+  uint64 offset = 2;
+
+  // Repeated on the first chunk so the recipient can verify before decrypting.
+  bytes digest = 3;
+
+  uint64 total_size = 4;
+}
+
+message DeleteRequest {
+  string blob_id = 1;
+}
+
+message DeleteResponse {
+  bool deleted = 1;
+}
