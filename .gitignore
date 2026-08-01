@@ -1,0 +1,75 @@
+# Build output
+# client/build alone is over 3 GB, and the compiled binaries in bin/ are
+# reproducible from source -- neither belongs in version control.
+bin/
+client/build/
+server/bin/
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+
+# Flutter/Dart
+.packages
+.pub-cache/
+.pub/
+*.lock.bak
+
+# Android
+client/android/.gradle/
+client/android/local.properties
+client/android/key.properties
+client/android/app/debug/
+client/android/app/profile/
+client/android/app/release/
+*.jks
+*.keystore
+
+# iOS / macOS
+client/ios/Pods/
+client/ios/.symlinks/
+client/ios/Flutter/Flutter.framework
+client/ios/Flutter/Flutter.podspec
+client/ios/Flutter/ephemeral/
+client/macos/Pods/
+client/macos/Flutter/ephemeral/
+**/Flutter/Generated.xcconfig
+**/Flutter/flutter_export_environment.sh
+*.xcuserstate
+**/xcuserdata/
+
+# Linux / Windows desktop
+client/linux/flutter/ephemeral/
+client/windows/flutter/ephemeral/
+
+# Logs and local databases
+*.log
+*.db
+*.sqlite
+*.sqlite3
+
+# Secrets and local configuration.
+# Nothing in this repository ships a secret, and it must stay that way: the
+# server reads every credential from the environment.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+!**/testdata/*.key
+
+# Editor and OS noise
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Go
+*.exe
+*.test
+*.out
+vendor/
+
+# Python helper scripts' caches
+__pycache__/
+*.pyc

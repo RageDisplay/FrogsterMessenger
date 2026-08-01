@@ -133,6 +133,13 @@ class _AppRootState extends State<_AppRoot> {
       // material; private keys stay in the platform keychain.
       final bundle = await crypto.initializeIdentity();
 
+      // Signing in from an install that already registered must resume that
+      // device, not create another one: the keys in the keychain carry the
+      // same registration id, and re-registering them collides with
+      // UNIQUE(user_id, registration_id) -- which locks the user out of their
+      // own account with an error about keys.
+      final knownDeviceId = await _keys.loadDeviceId();
+
       final tokens = register
           ? await _api.register(
               username: username,
@@ -144,8 +151,13 @@ class _AppRootState extends State<_AppRoot> {
               username: username,
               password: password,
               deviceName: _deviceName(),
-              keys: bundle,
+              // A fresh install has no device id and must register one; a
+              // returning install resumes the device it already owns.
+              keys: knownDeviceId == null ? bundle : null,
+              deviceId: knownDeviceId,
             );
+
+      await _keys.saveDeviceId(tokens.deviceId);
 
       final account = Account(
         userId: tokens.userId,
@@ -204,13 +216,22 @@ class _AppRootState extends State<_AppRoot> {
     if (mounted) setState(() => _chats = chats);
   }
 
-  Future<void> _signOut() async {
-    // Order matters: stop the socket, then destroy keys, then history. Wiping
-    // keys while frames are still arriving would produce a burst of decrypt
-    // failures.
+  /// Signs out, optionally destroying this device's identity.
+  ///
+  /// [forget] erases the identity keys as well. That is the right thing when
+  /// handing the machine on, but it also makes the device unrecognisable: every
+  /// contact has pinned the old identity key, so after signing back in the
+  /// device is a stranger to them and no existing conversation can continue.
+  /// The ordinary case keeps the identity and only drops the session, so
+  /// signing back in resumes exactly where it left off.
+  Future<void> _signOut({bool forget = false}) async {
+    // Order matters: stop the socket first. Wiping while frames are still
+    // arriving would produce a burst of decrypt failures.
     await _ws.close();
-    await _keys.wipeAll();
-    await _database?.wipe();
+    if (forget) {
+      await _keys.wipeAll();
+      await _database?.wipe();
+    }
     await _repository?.dispose();
 
     _files.accessToken = null;
@@ -263,9 +284,9 @@ class _AppRootState extends State<_AppRoot> {
           account: account,
           sessions: sessions,
           onRevokeSession: (session) => _api.revokeSession(session.id),
-          onSignOut: () {
+          onSignOut: ({required bool forget}) {
             Navigator.of(context).pop();
-            _signOut();
+            _signOut(forget: forget);
           },
         ),
       ),

@@ -10,6 +10,43 @@ import (
 	"github.com/vectrixsecurity/frogster/server/internal/store"
 )
 
+// handleLookupUser resolves a user id to a username.
+//
+// An inbound message names its sender by id, but a conversation is labelled
+// with a username -- and sending a reply needs the username to fetch key
+// bundles. A recipient who has never fetched that peer's keys has no way to
+// connect the two without this.
+//
+// Authenticated, and returns nothing beyond the public username, so it does
+// not expose more than the key endpoint already does.
+func (s *Server) handleLookupUser(w http.ResponseWriter, r *http.Request) {
+	if _, ok := claimsOrUnauthorized(w, r, s); !ok {
+		return
+	}
+
+	id, err := parseUUID(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id is not a valid UUID", s.log)
+		return
+	}
+
+	user, err := s.store.UserByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "user not found", s.log)
+			return
+		}
+		s.log.Error("lookup user by id", "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal error", s.log)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"user_id":  user.ID.String(),
+		"username": user.Username,
+	}, s.log)
+}
+
 type createChatRequest struct {
 	Type string `json:"type"`
 	// Peer names the other participant for a direct chat.

@@ -376,4 +376,34 @@ void main() {
       expect(loaded.attachment, isNull);
     });
   });
+
+  group('incoming message into an unknown chat', () {
+    // The recipient never created the chat: the sender did, on their device.
+    // messages.chat_id has a foreign key onto chats(id), so inserting without
+    // that row fails -- and the failure used to be swallowed, making incoming
+    // messages vanish with no trace anywhere.
+    test('fails without a chat row', () async {
+      var threw = false;
+      try {
+        await messages.upsertMessage(sample(chatId: 'never-seen-here', seq: 1));
+      } catch (_) {
+        threw = true;
+      }
+
+      expect(threw, isTrue,
+          reason: 'a message cannot be stored for a chat this device does not '
+              'know; the repository must create the chat first');
+    });
+
+    test('succeeds once the chat is created first', () async {
+      await messages.upsertChat(
+        const Chat(id: 'never-seen-here', type: 'direct', epoch: 0),
+      );
+      await messages.upsertMessage(sample(chatId: 'never-seen-here', seq: 1));
+
+      final stored = await messages.messagesForChat('never-seen-here');
+      expect(stored.length, 1);
+      expect(stored.single.body, 'hello');
+    });
+  });
 }

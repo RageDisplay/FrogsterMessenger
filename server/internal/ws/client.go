@@ -63,6 +63,20 @@ func NewClient(hub *Hub, conn *websocket.Conn, key ClientKey, handler FrameHandl
 	}
 }
 
+// NewDetachedClient builds a Client with no underlying socket, for tests in
+// other packages that need a registered recipient without a real connection.
+//
+// Safe only while the pumps are not started: the hub itself touches nothing
+// but the key and the send channel, so the nil conn is never dereferenced.
+func NewDetachedClient(key ClientKey, log *slog.Logger) *Client {
+	return &Client{
+		key:    key,
+		send:   make(chan []byte, sendBuffer),
+		closed: make(chan struct{}),
+		log:    log,
+	}
+}
+
 // Key returns the client's identity.
 func (c *Client) Key() ClientKey { return c.key }
 

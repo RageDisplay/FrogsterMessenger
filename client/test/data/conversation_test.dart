@@ -137,6 +137,82 @@ void main() {
       }
     });
 
+    test('PC first, then phone replies, then PC replies again', () async {
+      // The exact order the user reported: PC -> phone worked, phone -> PC did
+      // not. The reply direction is what breaks, so the test must go past the
+      // first exchange in BOTH directions.
+      await aliceEngine.establishOutboundSession(
+        bobAddr,
+        bundleFrom(bobPublished, 'bob-dev'),
+      );
+
+      // PC sends first. Prekey message; Bob builds his session from it.
+      final m1 = await aliceEngine.encrypt(
+        bobAddr,
+        MessagePayload(body: 'from PC').encode(),
+      );
+      expect(
+        MessagePayload.decode(
+          await bobEngine.decrypt(aliceAddr, fromWire(toWire(m1))),
+        ).body,
+        'from PC',
+      );
+
+      // Phone replies. This is where the user saw nothing arrive.
+      final m2 = await bobEngine.encrypt(
+        aliceAddr,
+        MessagePayload(body: 'from phone').encode(),
+      );
+      expect(
+        MessagePayload.decode(
+          await aliceEngine.decrypt(bobAddr, fromWire(toWire(m2))),
+        ).body,
+        'from phone',
+        reason: 'the reply from the phone must decrypt on the PC',
+      );
+
+      // And back again, to be sure the ratchet keeps turning.
+      final m3 = await aliceEngine.encrypt(
+        bobAddr,
+        MessagePayload(body: 'PC again').encode(),
+      );
+      expect(
+        MessagePayload.decode(
+          await bobEngine.decrypt(aliceAddr, fromWire(toWire(m3))),
+        ).body,
+        'PC again',
+      );
+    });
+
+    test('the initiator keeps attaching handshake material until answered',
+        () async {
+      // Until the peer replies, every message the initiator sends is a prekey
+      // message carrying the same handshake. Processing each one as a fresh
+      // handshake would reset the ratchet and lose the messages in between.
+      await aliceEngine.establishOutboundSession(
+        bobAddr,
+        bundleFrom(bobPublished, 'bob-dev'),
+      );
+
+      final sent = <String>[];
+      for (var i = 0; i < 3; i++) {
+        final msg = await aliceEngine.encrypt(
+          bobAddr,
+          MessagePayload(body: 'burst $i').encode(),
+        );
+        expect(msg.cipherType, cipherTypePreKey,
+            reason: 'still unanswered, so still a prekey message');
+        sent.add(toWire(msg));
+      }
+
+      // All three must decrypt, in order, on one session.
+      for (var i = 0; i < sent.length; i++) {
+        final got = await bobEngine.decrypt(aliceAddr, fromWire(sent[i]));
+        expect(MessagePayload.decode(got).body, 'burst $i',
+            reason: 'message $i was lost to a session reset');
+      }
+    });
+
     test('both sides opening a session independently still converge',
         () async {
       // What happens in the app when each user taps "new chat" before the

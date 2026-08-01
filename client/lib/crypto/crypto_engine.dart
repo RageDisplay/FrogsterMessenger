@@ -11,6 +11,7 @@
 /// appears, swapping to it should mean writing one new class.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
@@ -143,7 +144,8 @@ class EncryptedPayload {
       );
 }
 
-/// Raised when a peer's identity key differs from the pinned one.
+/// Raised when a peer's identity key differs from the pinned one and the
+/// engine is running in [TrustPolicy.strict].
 ///
 /// Sending is blocked until the user accepts the change. Auto-accepting would
 /// make a malicious server's key substitution invisible, which is the whole
@@ -156,6 +158,46 @@ class IdentityChangedException implements Exception {
   String toString() =>
       'IdentityChangedException: identity key for $peer changed; '
       'user must verify the new safety number before sending';
+}
+
+/// How the engine reacts to a peer's identity key changing.
+///
+/// The change itself is unavoidable and usually benign: replacing a phone
+/// means new keys, because a private key that could move between devices would
+/// not be device-bound in the first place.
+enum TrustPolicy {
+  /// Re-establish the session automatically and report the change, the way
+  /// WhatsApp and Signal do.
+  ///
+  /// Sending keeps working, so a contact who switches phones does not silently
+  /// become unreachable. The trade-off is real and deliberate: a malicious
+  /// server substituting a key is surfaced as a notice rather than a wall, so
+  /// a user who ignores the notice can be MITM'd. Blocking instead would make
+  /// every device upgrade look identical to an attack, which trains people to
+  /// dismiss the warning that matters.
+  notifyAndReestablish,
+
+  /// Refuse to encrypt until the user verifies the new safety number.
+  ///
+  /// Safe against key substitution, at the cost of both sides needing a manual
+  /// step whenever either replaces a device.
+  strict,
+}
+
+/// A peer's identity key changed and the session was rebuilt automatically.
+///
+/// Reported rather than thrown: under [TrustPolicy.notifyAndReestablish] the
+/// message still goes out, so this is a notice for the UI, not a failure.
+class IdentityChangeNotice {
+  const IdentityChangeNotice({
+    required this.peer,
+    required this.previousKey,
+    required this.newKey,
+  });
+
+  final PeerAddress peer;
+  final Uint8List previousKey;
+  final Uint8List newKey;
 }
 
 /// The cryptographic operations the application layer needs.
@@ -199,6 +241,17 @@ abstract class CryptoEngine {
 
   /// Records that the user accepted a changed identity key.
   Future<void> acceptIdentityChange(PeerAddress peer);
+
+  /// The identity currently pinned for a peer device, if any.
+  ///
+  /// Lets callers detect a key change before committing to a handshake.
+  Future<PinnedIdentity?> pinnedIdentityFor(PeerAddress peer);
+
+  /// Identity key changes that were accepted automatically.
+  ///
+  /// Only emits under [TrustPolicy.notifyAndReestablish]; strict mode throws
+  /// [IdentityChangedException] instead.
+  Stream<IdentityChangeNotice> get identityChanges;
 }
 
 /// Handshake material an initiator must attach to its early messages.
@@ -212,6 +265,19 @@ class _PendingHandshake {
   final Uint8List identityKey;
   final Uint8List ephemeralKey;
   final int? oneTimePreKeyId;
+
+  Map<String, dynamic> toJson() => {
+        'ik': base64Encode(identityKey),
+        'ek': base64Encode(ephemeralKey),
+        if (oneTimePreKeyId != null) 'otp': oneTimePreKeyId,
+      };
+
+  static _PendingHandshake fromJson(Map<String, dynamic> json) =>
+      _PendingHandshake(
+        identityKey: base64Decode(json['ik'] as String),
+        ephemeralKey: base64Decode(json['ek'] as String),
+        oneTimePreKeyId: json['otp'] as int?,
+      );
 }
 
 /// Where ratchet sessions and pinned identities are persisted.
@@ -232,14 +298,22 @@ class FrogsterCryptoEngine implements CryptoEngine {
   FrogsterCryptoEngine({
     required KeyStorage keyStorage,
     required SessionStore sessionStore,
+    TrustPolicy trustPolicy = TrustPolicy.notifyAndReestablish,
     Random? random,
   })  : _keys = keyStorage,
         _sessions = sessionStore,
+        _trustPolicy = trustPolicy,
         _random = random ?? Random.secure();
 
   final KeyStorage _keys;
   final SessionStore _sessions;
+  final TrustPolicy _trustPolicy;
   final Random _random;
+
+  final _identityChanges = StreamController<IdentityChangeNotice>.broadcast();
+
+  @override
+  Stream<IdentityChangeNotice> get identityChanges => _identityChanges.stream;
 
   /// Sessions held in memory for the lifetime of the process.
   ///
@@ -322,17 +396,19 @@ class FrogsterCryptoEngine implements CryptoEngine {
   ) async {
     final identity = await _requireIdentity();
 
-    // Trust on first use: pin the peer's identity, and refuse to proceed if it
-    // changed without the user accepting.
+    // Trust on first use: pin the peer's identity, and decide what a change
+    // means according to the configured policy.
     final pinned = await _sessions.loadPinnedIdentity(peer.key);
     final decision =
         evaluateTrust(pinned: pinned, presentedKey: bundle.identityKey);
 
     switch (decision) {
       case TrustDecision.changed:
-        if (pinned == null || !pinned.acceptedChange) {
-          throw IdentityChangedException(peer);
-        }
+        await _handleIdentityChange(
+          peer: peer,
+          pinned: pinned!,
+          presentedKey: bundle.identityKey,
+        );
       case TrustDecision.firstUse:
         await _sessions.savePinnedIdentity(PinnedIdentity(
           userId: peer.userId,
@@ -355,15 +431,16 @@ class FrogsterCryptoEngine implements CryptoEngine {
     );
 
     _live[peer.key] = session;
-    await _sessions.saveSession(peer.key, session.toJson());
 
-    // Held until the first message is sent, which must carry the material the
-    // peer needs to complete its half of the handshake.
+    // Held until the peer replies, because every message until then must carry
+    // the material they need to complete their half of the handshake.
     _pendingHandshake[peer.key] = _PendingHandshake(
       identityKey: identity.dhKeyPair.publicKey,
       ephemeralKey: result.ephemeralPublicKey,
       oneTimePreKeyId: result.usedOneTimePreKeyId,
     );
+
+    await _persist(peer.key, session);
   }
 
   @override
@@ -404,9 +481,15 @@ class FrogsterCryptoEngine implements CryptoEngine {
         identityKey: initiatorIdentityKey,
         pinnedAt: DateTime.now(),
       ));
-    } else if (!constantTimeEquals(pinned.identityKey, initiatorIdentityKey) &&
-        !pinned.acceptedChange) {
-      throw IdentityChangedException(peer);
+    } else if (!constantTimeEquals(pinned.identityKey, initiatorIdentityKey)) {
+      await _handleIdentityChange(
+        peer: peer,
+        pinned: pinned,
+        presentedKey: initiatorIdentityKey,
+        // The session is being built from this very message, so dropping
+        // state here would discard the session we are about to install.
+        dropSession: false,
+      );
     }
 
     final session = await RatchetSession.initReceiver(
@@ -416,7 +499,11 @@ class FrogsterCryptoEngine implements CryptoEngine {
     );
 
     _live[peer.key] = session;
-    await _sessions.saveSession(peer.key, session.toJson());
+
+    // Answering a handshake settles the session, so nothing stays pending: we
+    // are the responder here, not the initiator.
+    _pendingHandshake.remove(peer.key);
+    await _persist(peer.key, session);
 
     // The one-time prekey is single use: destroying the private half is what
     // makes it contribute forward secrecy.
@@ -438,7 +525,7 @@ class FrogsterCryptoEngine implements CryptoEngine {
   ) async {
     final session = await _session(peer);
     final message = await session.encrypt(plaintext);
-    await _sessions.saveSession(peer.key, session.toJson());
+    await _persist(peer.key, session);
 
     final pending = _pendingHandshake[peer.key];
     if (pending != null) {
@@ -504,13 +591,15 @@ class FrogsterCryptoEngine implements CryptoEngine {
     final message = RatchetMessage.deserialize(payload.body);
     final plaintext = await session.decrypt(message);
 
+    // Hearing from the peer proves they completed the handshake, so the
+    // material no longer needs to ride along. Dropped before persisting, or
+    // the stored copy would outlive it and keep tagging messages as prekey
+    // messages forever.
+    _pendingHandshake.remove(peer.key);
+
     // Persist immediately: the chain has advanced and skipped keys may have
     // changed. Losing that would make later messages undecryptable.
-    await _sessions.saveSession(peer.key, session.toJson());
-
-    // Hearing from the peer proves they completed the handshake, so the
-    // material no longer needs to ride along.
-    _pendingHandshake.remove(peer.key);
+    await _persist(peer.key, session);
 
     return plaintext;
   }
@@ -532,6 +621,10 @@ class FrogsterCryptoEngine implements CryptoEngine {
   }
 
   @override
+  Future<PinnedIdentity?> pinnedIdentityFor(PeerAddress peer) =>
+      _sessions.loadPinnedIdentity(peer.key);
+
+  @override
   Future<void> acceptIdentityChange(PeerAddress peer) async {
     final pinned = await _sessions.loadPinnedIdentity(peer.key);
     if (pinned == null) return;
@@ -548,6 +641,53 @@ class FrogsterCryptoEngine implements CryptoEngine {
     // reused: drop it and let a fresh handshake run.
     _live.remove(peer.key);
     await _sessions.deleteSession(peer.key);
+  }
+
+  /// Applies the trust policy to a peer whose identity key no longer matches
+  /// what we pinned.
+  ///
+  /// Under [TrustPolicy.notifyAndReestablish] the new key is pinned, the stale
+  /// session is dropped so a fresh handshake runs, and the change is announced
+  /// on [identityChanges]. Under [TrustPolicy.strict] nothing is written and
+  /// the caller is expected to surface [IdentityChangedException] -- except
+  /// when the user already accepted this peer's change, which is a standing
+  /// decision that both policies honour.
+  ///
+  /// [dropSession] is false on the inbound path, where the caller is in the
+  /// middle of building the replacement session from the message at hand.
+  Future<void> _handleIdentityChange({
+    required PeerAddress peer,
+    required PinnedIdentity pinned,
+    required Uint8List presentedKey,
+    bool dropSession = true,
+  }) async {
+    final accepted = pinned.acceptedChange ||
+        _trustPolicy == TrustPolicy.notifyAndReestablish;
+    if (!accepted) throw IdentityChangedException(peer);
+
+    await _sessions.savePinnedIdentity(PinnedIdentity(
+      userId: peer.userId,
+      deviceId: peer.deviceId,
+      identityKey: presentedKey,
+      pinnedAt: DateTime.now(),
+      // Consumed: leaving it set would make the *next* change silent even in
+      // strict mode, turning a one-off approval into permanent blanket trust.
+      acceptedChange: false,
+    ));
+
+    if (dropSession) {
+      // The old session's root key derives from the old identity, so no amount
+      // of ratcheting recovers it.
+      _live.remove(peer.key);
+      _pendingHandshake.remove(peer.key);
+      await _sessions.deleteSession(peer.key);
+    }
+
+    _identityChanges.add(IdentityChangeNotice(
+      peer: peer,
+      previousKey: pinned.identityKey,
+      newKey: presentedKey,
+    ));
   }
 
   /// Reports whether the session we already hold can decrypt this payload.
@@ -585,7 +725,31 @@ class FrogsterCryptoEngine implements CryptoEngine {
 
     final session = await RatchetSession.fromJson(stored);
     _live[peer.key] = session;
+
+    // Restore the handshake material alongside the session. Without this an
+    // app restart between establishing a session and hearing back from the
+    // peer downgrades every later message to an ordinary ratchet message. The
+    // peer has no session and no way to build one, so the conversation dies in
+    // that direction only -- while their own messages still arrive, because
+    // theirs still carry a handshake.
+    final handshake = stored['pending_handshake'];
+    if (handshake is Map<String, dynamic>) {
+      _pendingHandshake[peer.key] = _PendingHandshake.fromJson(handshake);
+    }
+
     return session;
+  }
+
+  /// Writes a session out, carrying any unacknowledged handshake with it.
+  Future<void> _persist(String peerKey, RatchetSession session) async {
+    final state = session.toJson();
+
+    final pending = _pendingHandshake[peerKey];
+    if (pending != null) {
+      state['pending_handshake'] = pending.toJson();
+    }
+
+    await _sessions.saveSession(peerKey, state);
   }
 
   Future<IdentityKeys> _requireIdentity() async {

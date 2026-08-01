@@ -1,7 +1,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Flutter injects this into the debug and profile manifests only, so a
+         release build has no network access at all unless it is declared here.
+         The failure is silent: every request fails as "could not reach the
+         server" while the same address answers from a shell on the phone. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
     <application
         android:label="frogster"
         android:name="${applicationName}"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:icon="@mipmap/ic_launcher">
         <activity
             android:name=".MainActivity"

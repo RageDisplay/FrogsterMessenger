@@ -62,7 +62,8 @@ func (s *Server) handleRevokeSession(w http.ResponseWriter, r *http.Request) {
 
 	// Scoped to the caller's own user id, so one account cannot revoke
 	// another's sessions.
-	if err := s.store.RevokeSession(r.Context(), claims.UserID, id); err != nil {
+	deviceID, err := s.store.RevokeSession(r.Context(), claims.UserID, id)
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "session not found", s.log)
 			return
@@ -74,10 +75,11 @@ func (s *Server) handleRevokeSession(w http.ResponseWriter, r *http.Request) {
 
 	// The revoked device's peers keep sessions with it; telling them lets
 	// clients drop that state instead of encrypting to a device that can no
-	// longer read anything.
+	// longer read anything. This is the device id, not the session id: peers
+	// address ratchet sessions by device.
 	if s.notifier != nil {
 		go s.notifier.NotifyDeviceRevoked(
-			context.WithoutCancel(r.Context()), claims.UserID, id,
+			context.WithoutCancel(r.Context()), claims.UserID, deviceID,
 		)
 	}
 

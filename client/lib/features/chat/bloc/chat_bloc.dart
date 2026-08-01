@@ -54,9 +54,12 @@ class ChatMessageReceived extends ChatEvent {
 }
 
 class ChatIdentityChanged extends ChatEvent {
-  const ChatIdentityChanged(this.peer);
+  const ChatIdentityChanged(this.peer, {this.blocksSending = false});
 
   final PeerAddress peer;
+
+  /// True when the change stopped a message from being sent.
+  final bool blocksSending;
 }
 
 class ChatIdentityAccepted extends ChatEvent {
@@ -73,6 +76,7 @@ class ChatState {
     this.peerUsername,
     this.changedPeer,
     this.identityChanged = false,
+    this.sendingBlocked = false,
     this.uploading = false,
     this.error,
   });
@@ -85,18 +89,25 @@ class ChatState {
   /// The specific device whose identity key changed, if any.
   final PeerAddress? changedPeer;
 
-  /// True when the peer's key changed and sending is blocked pending the
-  /// user's decision.
+  /// True when the peer's key changed and the notice has not been dismissed.
   final bool identityChanged;
+
+  /// True when the change blocked the send, i.e. the strict trust policy is
+  /// in force. Under the default policy the message went out regardless.
+  final bool sendingBlocked;
 
   /// True while an attachment is being encrypted and uploaded.
   final bool uploading;
 
   final String? error;
 
-  /// Sending is disabled while a key change is unresolved: proceeding would
-  /// hand plaintext to whoever supplied the new key.
-  bool get canSend => status == ChatStatus.ready && !identityChanged;
+  /// Sending is only blocked under the strict trust policy.
+  ///
+  /// Replacing a phone changes the key, so blocking on every change would make
+  /// an ordinary upgrade indistinguishable from an attack -- and would leave
+  /// the contact permanently unreachable until both sides act.
+  bool get canSend =>
+      status == ChatStatus.ready && !(identityChanged && sendingBlocked);
 
   ChatState copyWith({
     ChatStatus? status,
@@ -105,6 +116,7 @@ class ChatState {
     String? peerUsername,
     PeerAddress? changedPeer,
     bool? identityChanged,
+    bool? sendingBlocked,
     bool? uploading,
     String? error,
   }) =>
@@ -115,6 +127,7 @@ class ChatState {
         peerUsername: peerUsername ?? this.peerUsername,
         changedPeer: changedPeer ?? this.changedPeer,
         identityChanged: identityChanged ?? this.identityChanged,
+        sendingBlocked: sendingBlocked ?? this.sendingBlocked,
         uploading: uploading ?? this.uploading,
         error: error,
       );
@@ -143,11 +156,12 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         add(ChatMessageReceived(message));
       }
     });
-    // Any device in this conversation changing its key blocks sending: we
-    // cannot tell which device the user is really talking to until they check.
+    // A device in this conversation changed its key. Usually that means the
+    // contact moved to a new phone; it is surfaced either way, and only blocks
+    // sending when the alert says the send actually failed.
     _alertSub = _repository.identityAlerts.listen((alert) {
       if (alert.chatId == state.chatId) {
-        add(ChatIdentityChanged(alert.peer));
+        add(ChatIdentityChanged(alert.peer, blocksSending: alert.blocksSending));
       }
     });
   }
@@ -211,7 +225,13 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         attachment: attachment,
       );
     } on IdentityChangedException {
-      emit(state.copyWith(uploading: false, identityChanged: true));
+      // Strict policy only: the send was refused, so sending stays disabled
+      // until the user verifies the new safety number.
+      emit(state.copyWith(
+        uploading: false,
+        identityChanged: true,
+        sendingBlocked: true,
+      ));
     } catch (e) {
       emit(state.copyWith(uploading: false, error: e.toString()));
     }
@@ -263,7 +283,11 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
   }
 
   void _onIdentityChanged(ChatIdentityChanged event, Emitter<ChatState> emit) {
-    emit(state.copyWith(identityChanged: true, changedPeer: event.peer));
+    emit(state.copyWith(
+      identityChanged: true,
+      sendingBlocked: event.blocksSending,
+      changedPeer: event.peer,
+    ));
   }
 
   Future<void> _onIdentityAccepted(
@@ -280,7 +304,7 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     // rebuilds the session against the accepted key.
     if (peerUsername != null) _resolver.invalidate(peerUsername);
 
-    emit(state.copyWith(identityChanged: false));
+    emit(state.copyWith(identityChanged: false, sendingBlocked: false));
   }
 
   @override

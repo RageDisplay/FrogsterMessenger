@@ -125,6 +125,7 @@ func (r *Router) Send(ctx context.Context, env *ws.Envelope) (*models.Message, e
 		"ciphertext_bytes", len(msg.Ciphertext),
 	)
 
+	livelyDelivered := make([]uint64, 0, len(deliveries))
 	for _, d := range deliveries {
 		// Each device receives only its own ciphertext. Broadcasting one
 		// payload to every device would be undecryptable for all but one.
@@ -141,7 +142,21 @@ func (r *Router) Send(ctx context.Context, env *ws.Envelope) (*models.Message, e
 			Timestamp:   msg.CreatedAt.UnixMilli(),
 			Seq:         msg.Seq,
 		}
-		r.deliverToDevice(ctx, ws.ClientKey{UserID: d.UserID, DeviceID: d.DeviceID}, out)
+		if r.deliverToDevice(ctx, ws.ClientKey{UserID: d.UserID, DeviceID: d.DeviceID}, out) {
+			livelyDelivered = append(livelyDelivered, d.ID)
+		}
+	}
+
+	// Retire the rows that reached a live socket. Leaving them pending would
+	// replay every message on the next reconnect, and a ratchet message cannot
+	// be decrypted a second time -- its message key is destroyed on first use,
+	// so the replay fails authentication and the conversation appears broken.
+	if len(livelyDelivered) > 0 {
+		if err := r.store.MarkDelivered(ctx, livelyDelivered); err != nil {
+			// Not fatal: the message was delivered. Worst case it is replayed
+			// and the client rejects the duplicate.
+			r.log.Warn("mark live delivery", "err", err, "count", len(livelyDelivered))
+		}
 	}
 
 	return msg, nil
@@ -195,34 +210,47 @@ func cipherTypeFor(
 	return fallback
 }
 
-// deliverToDevice attempts live delivery, in order of decreasing locality.
+// deliverToDevice attempts live delivery, in order of decreasing locality, and
+// reports whether the frame was handed to a live socket.
 //
-// Failure at every step is not an error: the message is already queued in the
+// Failing at every step is not an error: the message is already queued in the
 // database, so the device receives it on its next connect.
-func (r *Router) deliverToDevice(ctx context.Context, key ws.ClientKey, env *ws.Envelope) {
+//
+// The return value drives whether the queued delivery row can be retired. A
+// message delivered live but left pending is redelivered on the next connect,
+// and a Double Ratchet message cannot be decrypted twice: the message key is
+// destroyed on first use, so the replay fails its MAC check. From the outside
+// that looks like the conversation breaking after a reconnect.
+func (r *Router) deliverToDevice(ctx context.Context, key ws.ClientKey, env *ws.Envelope) bool {
 	if r.hub.IsLocal(key) {
 		if r.hub.Deliver(ws.Delivery{Key: key, Envelope: env}) {
-			return
+			return true
 		}
 	}
 
 	online, err := r.presence.IsOnline(ctx, key)
 	if err != nil {
 		r.log.Warn("presence lookup failed", "err", err, "device_id", key.DeviceID)
-		return
+		return false
 	}
 	if !online {
-		return // stays pending in the offline queue
+		return false // stays pending in the offline queue
 	}
 
 	payload, err := json.Marshal(routedFrame{Target: key, Envelope: env})
 	if err != nil {
 		r.log.Error("marshal routed frame", "err", err)
-		return
+		return false
 	}
 	if err := r.broker.Publish(ctx, key.UserID, payload); err != nil {
 		r.log.Warn("cross-instance publish failed", "err", err, "device_id", key.DeviceID)
+		return false
 	}
+
+	// Published to the owning node. Treated as delivered: that node hands it to
+	// a live socket, and keeping the row pending would replay the message on
+	// the next reconnect.
+	return true
 }
 
 // routedFrame wraps an envelope with its target device for cross-instance

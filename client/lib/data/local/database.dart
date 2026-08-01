@@ -37,7 +37,7 @@ class AppDatabase {
       databaseFactory = databaseFactoryFfi;
     }
 
-    final dbPath = path ?? '${await getDatabasesPath()}/frogster.db';
+    final dbPath = path ?? await _defaultDatabasePath();
     final database = await openDatabase(
       dbPath,
       version: _schemaVersion,
@@ -68,6 +68,28 @@ class AppDatabase {
       ),
     );
     return AppDatabase._(database);
+  }
+
+  /// Where the database lives.
+  ///
+  /// On desktop sqflite_ffi defaults to `.dart_tool/` under the *working
+  /// directory*, which moves depending on how the app was started -- so the
+  /// same install can end up with several databases, and deleting "the"
+  /// database does not necessarily remove the one in use. A fixed per-user
+  /// location avoids that.
+  static Future<String> _defaultDatabasePath() async {
+    if (Platform.isAndroid || Platform.isIOS) {
+      return '${await getDatabasesPath()}/frogster.db';
+    }
+
+    final home = Platform.environment['APPDATA'] ??
+        Platform.environment['XDG_DATA_HOME'] ??
+        Platform.environment['HOME'] ??
+        '.';
+
+    final dir = Directory('$home/Frogster');
+    if (!dir.existsSync()) dir.createSync(recursive: true);
+    return '${dir.path}/frogster.db';
   }
 
   /// Migrates an existing database forward.

@@ -183,7 +183,8 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
           body: Column(
             children: [
-              if (state.identityChanged) const _IdentityChangeBanner(),
+              if (state.identityChanged)
+                _IdentityChangeBanner(blocksSending: state.sendingBlocked),
               Expanded(child: _buildBody(context, state)),
               if (_staged != null)
                 _StagedAttachment(
@@ -256,26 +257,44 @@ class _ChatScreenState extends State<ChatScreen> {
 /// This is deliberately intrusive. A silent re-pin would hide exactly the
 /// event that a key-substitution attack produces.
 class _IdentityChangeBanner extends StatelessWidget {
-  const _IdentityChangeBanner();
+  const _IdentityChangeBanner({required this.blocksSending});
+
+  /// True under the strict trust policy, where the message was refused.
+  final bool blocksSending;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
 
+    // Two different events wear the same words otherwise. Blocking means we
+    // refused to send; the informational form means the conversation carried
+    // on and the user is being told why the safety number moved.
+    final background =
+        blocksSending ? scheme.errorContainer : scheme.secondaryContainer;
+    final foreground =
+        blocksSending ? scheme.onErrorContainer : scheme.onSecondaryContainer;
+
     return MaterialBanner(
-      backgroundColor: scheme.errorContainer,
-      leading: Icon(Icons.gpp_maybe, color: scheme.onErrorContainer),
+      backgroundColor: background,
+      leading: Icon(
+        blocksSending ? Icons.gpp_maybe : Icons.info_outline,
+        color: foreground,
+      ),
       content: Text(
-        'This contact\'s safety number has changed. They may have reinstalled '
-        'the app — or someone may be intercepting your messages. Verify before '
-        'sending.',
-        style: TextStyle(color: scheme.onErrorContainer),
+        blocksSending
+            ? 'This contact\'s safety number has changed. They may have '
+                'reinstalled the app — or someone may be intercepting your '
+                'messages. Verify before sending.'
+            : 'This contact\'s safety number has changed, usually because they '
+                'switched to a new device. Your messages are still encrypted. '
+                'Verify the number if you want to be certain.',
+        style: TextStyle(color: foreground),
       ),
       actions: [
         TextButton(
           onPressed: () =>
               context.read<ChatBloc>().add(const ChatIdentityAccepted()),
-          child: const Text('I verified it'),
+          child: Text(blocksSending ? 'I verified it' : 'Got it'),
         ),
       ],
     );

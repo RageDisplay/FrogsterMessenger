@@ -7,6 +7,8 @@
 library;
 
 import '../../crypto/crypto_engine.dart';
+import '../../crypto/primitives.dart';
+import '../../crypto/x3dh.dart';
 import '../remote/api_client.dart';
 
 /// A device that can receive an encrypted message.
@@ -42,6 +44,23 @@ class DeviceResolver {
   /// force every later session to start without one.
   final Map<String, List<ResolvedDevice>> _cache = {};
 
+  /// When each cached entry was fetched.
+  final Map<String, DateTime> _cachedAt = {};
+
+  /// How long a device list is trusted before being refetched.
+  ///
+  /// Without an expiry a cached list is permanent for the life of the process,
+  /// so a contact who adds a device -- switching to a new phone, most often --
+  /// would never receive anything we send: we would keep encrypting only for
+  /// devices we happened to know about first.
+  static const Duration cacheTtl = Duration(minutes: 5);
+
+  /// User id to username, learned from key bundles.
+  ///
+  /// An incoming message names its sender by id, but a chat is labelled with a
+  /// username, so the two have to be connected somewhere.
+  final Map<String, String> _usernames = {};
+
   /// Every device that should receive a direct message to [username],
   /// including our own other devices.
   Future<List<ResolvedDevice>> devicesForDirectMessage(String username) async {
@@ -62,7 +81,7 @@ class DeviceResolver {
   /// Resolves a user's devices, opening a session with each.
   Future<List<ResolvedDevice>> devicesFor(String username) async {
     final cached = _cache[username];
-    if (cached != null) {
+    if (cached != null && !_isStale(username)) {
       await _healMissingSessions(username, cached);
       return cached;
     }
@@ -78,16 +97,58 @@ class DeviceResolver {
       resolved.add(ResolvedDevice(address: address, username: username));
 
       if (bundle.deviceId == _selfDeviceId) continue;
-      if (await _crypto.hasSession(address)) continue;
 
-      // Throws IdentityChangedException when the peer's key changed. That
-      // propagates rather than being swallowed: silently trusting a new key is
-      // exactly the attack pinning exists to catch.
+      // A session alone is not proof the key still matches: a peer who
+      // reinstalled or moved to a new phone publishes a new identity key under
+      // the same device id. establishOutboundSession compares against the
+      // pinned key and, under the default policy, rebuilds the session and
+      // reports the change; in strict mode it throws instead. Skipping the
+      // call whenever a session exists would hide both.
+      if (await _crypto.hasSession(address) &&
+          !await _identityChangedFor(address, bundle)) {
+        continue;
+      }
+
       await _crypto.establishOutboundSession(address, bundle);
     }
 
     _cache[username] = resolved;
+    _cachedAt[username] = DateTime.now();
+    _usernames[fetched.userId] = username;
     return resolved;
+  }
+
+  bool _isStale(String username) {
+    final at = _cachedAt[username];
+    return at == null || DateTime.now().difference(at) > cacheTtl;
+  }
+
+  /// True when the bundle presents a different identity key than the one
+  /// pinned for this device.
+  Future<bool> _identityChangedFor(
+    PeerAddress address,
+    PreKeyBundle bundle,
+  ) async {
+    final pinned = await _crypto.pinnedIdentityFor(address);
+    if (pinned == null) return false;
+    return !constantTimeEquals(pinned.identityKey, bundle.identityKey);
+  }
+
+  /// The username behind a user id, if we have fetched their keys.
+  String? usernameFor(String userId) => _usernames[userId];
+
+  /// Asks the server for a username we have not seen before.
+  ///
+  /// Needed when a message arrives from someone whose keys were never fetched:
+  /// without the username the chat cannot be labelled, and a reply cannot look
+  /// up their key bundle.
+  Future<String?> lookupUsername(String userId) async {
+    final known = _usernames[userId];
+    if (known != null) return known;
+
+    final username = await _api.lookupUsername(userId);
+    if (username != null) _usernames[userId] = username;
+    return username;
   }
 
   /// Re-establishes sessions that have gone missing, for example after a key

@@ -26,8 +26,15 @@ class _Endpoint {
   PeerAddress get address =>
       PeerAddress(userId: userId, deviceId: deviceId);
 
-  Future<void> start({int preKeys = 10}) async {
-    engine = FrogsterCryptoEngine(keyStorage: keys, sessionStore: sessions);
+  Future<void> start({
+    int preKeys = 10,
+    TrustPolicy trustPolicy = TrustPolicy.notifyAndReestablish,
+  }) async {
+    engine = FrogsterCryptoEngine(
+      keyStorage: keys,
+      sessionStore: sessions,
+      trustPolicy: trustPolicy,
+    );
     published = await engine.initializeIdentity(oneTimePreKeyCount: preKeys);
   }
 
@@ -191,13 +198,13 @@ void main() {
           equals(deserializePublicKey(bob.published.identityKey)));
     });
 
-    test('blocks a changed identity key', () async {
+    test('strict policy blocks a changed identity key', () async {
       // The attack this exists to stop: the server substitutes a key it
       // controls. Without pinning, Alice would build a session with the
       // attacker and never know.
       final alice = _Endpoint('alice', 'a1');
       final bob = _Endpoint('bob', 'b1');
-      await alice.start();
+      await alice.start(trustPolicy: TrustPolicy.strict);
       await bob.start();
 
       await alice.engine
@@ -213,8 +220,72 @@ void main() {
         () => alice.engine
             .establishOutboundSession(bob.address, bob.bundleForPeer()),
         throwsA(isA<IdentityChangedException>()),
-        reason: 'a key change must block sending until the user accepts it',
+        reason: 'strict mode must block sending until the user accepts',
       );
+    });
+
+    test('default policy re-establishes and reports a changed key', () async {
+      // Replacing a phone produces exactly this: a new identity key under a
+      // known peer. Blocking here would leave the contact unreachable, so the
+      // session is rebuilt and the change is announced instead.
+      final alice = _Endpoint('alice', 'a1');
+      final bob = _Endpoint('bob', 'b1');
+      await alice.start();
+      await bob.start();
+
+      await alice.engine
+          .establishOutboundSession(bob.address, bob.bundleForPeer());
+
+      final notices = <IdentityChangeNotice>[];
+      alice.engine.identityChanges.listen(notices.add);
+
+      final stale = Uint8List.fromList(List.filled(32, 0x11));
+      alice.sessions.forcePinnedKey(bob.address.key, stale);
+
+      await alice.engine
+          .establishOutboundSession(bob.address, bob.bundleForPeer());
+
+      // Let the broadcast stream deliver.
+      await Future<void>.delayed(Duration.zero);
+
+      expect(await alice.engine.hasSession(bob.address), isTrue,
+          reason: 'the conversation must remain usable');
+      expect(notices, hasLength(1), reason: 'the user has to be told');
+      expect(notices.single.peer, equals(bob.address));
+      expect(notices.single.previousKey, equals(stale));
+
+      final pinned = await alice.sessions.loadPinnedIdentity(bob.address.key);
+      expect(pinned!.identityKey,
+          equals(deserializePublicKey(bob.published.identityKey)),
+          reason: 'the new key must be pinned, not the stale one');
+      expect(pinned.acceptedChange, isFalse,
+          reason: 'a rebuild must not grant standing trust for future changes');
+    });
+
+    test('a peer who reinstalls can still be messaged end to end', () async {
+      // The full "new phone" path: Bob's device is replaced by one with fresh
+      // keys, and Alice must be able to reach it without manual intervention.
+      final alice = _Endpoint('alice', 'a1');
+      final bobOld = _Endpoint('bob', 'b1');
+      await alice.start();
+      await bobOld.start();
+
+      await alice.engine
+          .establishOutboundSession(bobOld.address, bobOld.bundleForPeer());
+      await alice.engine.encrypt(bobOld.address, utf8.encode('before'));
+
+      // Same user, same device id, brand new key material.
+      final bobNew = _Endpoint('bob', 'b1');
+      await bobNew.start();
+
+      await alice.engine
+          .establishOutboundSession(bobNew.address, bobNew.bundleForPeer());
+
+      final payload =
+          await alice.engine.encrypt(bobNew.address, utf8.encode('after'));
+      final plaintext = await bobNew.engine.decrypt(alice.address, payload);
+
+      expect(utf8.decode(plaintext), equals('after'));
     });
 
     test('accepting a change allows a new session', () async {
@@ -347,6 +418,86 @@ void main() {
       expect(utf8.decode(await bob.engine.decrypt(alice.address, after)),
           'after',
           reason: 'ratchet state must survive an app restart');
+    });
+
+    test('a restart before the peer replies still sends a prekey message',
+        () async {
+      // The initiator has to keep attaching handshake material until the peer
+      // answers, because until then it cannot know the first message arrived.
+      // Holding that material only in memory means a restart downgrades every
+      // later message to an ordinary ratchet message -- which the peer cannot
+      // decrypt and cannot build a session from.
+      //
+      // The failure is one-directional and therefore easy to misread: the peer
+      // still reaches us, because their own messages carry their handshake, so
+      // the conversation looks alive right up until you check which way it
+      // actually flows.
+      final alice = _Endpoint('alice', 'a1');
+      final bob = _Endpoint('bob', 'b1');
+      await alice.start();
+      await bob.start();
+
+      await alice.engine
+          .establishOutboundSession(bob.address, bob.bundleForPeer());
+
+      // Alice restarts before Bob has said anything back.
+      alice.engine = FrogsterCryptoEngine(
+        keyStorage: alice.keys,
+        sessionStore: alice.sessions,
+      );
+
+      final payload =
+          await alice.engine.encrypt(bob.address, utf8.encode('hello'));
+
+      expect(payload.isPreKeyMessage, isTrue,
+          reason: 'Bob has no session yet, so the message must carry one');
+      expect(payload.initiatorIdentityKey, isNotNull);
+      expect(payload.initiatorEphemeralKey, isNotNull);
+
+      // Bob, who has never heard of Alice, must be able to read it.
+      await _acceptInbound(bob, alice, payload);
+      expect(
+        utf8.decode(await bob.engine.decrypt(alice.address, payload)),
+        'hello',
+      );
+    });
+
+    test('handshake material stops riding along once the peer replies',
+        () async {
+      // The flip side: persisting the handshake must not make it permanent.
+      // A prekey message rebuilds the session on arrival, so re-sending the
+      // material after the conversation is established would reset the peer's
+      // ratchet mid-dialogue.
+      final alice = _Endpoint('alice', 'a1');
+      final bob = _Endpoint('bob', 'b1');
+      await alice.start();
+      await bob.start();
+
+      await alice.engine
+          .establishOutboundSession(bob.address, bob.bundleForPeer());
+      final opening =
+          await alice.engine.encrypt(bob.address, utf8.encode('hi'));
+      await _acceptInbound(bob, alice, opening);
+      await bob.engine.decrypt(alice.address, opening);
+
+      // Bob answers, which proves he completed the handshake.
+      final reply = await bob.engine.encrypt(alice.address, utf8.encode('yo'));
+      await alice.engine.decrypt(bob.address, reply);
+
+      // Restarting must not resurrect the settled handshake from storage.
+      alice.engine = FrogsterCryptoEngine(
+        keyStorage: alice.keys,
+        sessionStore: alice.sessions,
+      );
+
+      final later =
+          await alice.engine.encrypt(bob.address, utf8.encode('still here'));
+      expect(later.isPreKeyMessage, isFalse,
+          reason: 'a settled session must not keep re-sending its handshake');
+      expect(
+        utf8.decode(await bob.engine.decrypt(alice.address, later)),
+        'still here',
+      );
     });
   });
 }

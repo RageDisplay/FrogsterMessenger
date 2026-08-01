@@ -23,6 +23,13 @@ const String _kSignedPreKeySignature = 'frogster.spk.signature';
 const String _kOneTimePreKeyPrefix = 'frogster.otp.';
 const String _kRegistrationId = 'frogster.registration_id';
 
+/// The server-assigned device id, stored after the first registration.
+///
+/// Without it a returning user would have to register a new device on every
+/// sign-in, which collides with UNIQUE(user_id, registration_id) and locks
+/// them out of their own account.
+const String _kDeviceId = 'frogster.device_id';
+
 /// Persistence contract for private key material.
 ///
 /// Declared as an interface so tests can substitute an in-memory
@@ -39,6 +46,8 @@ abstract class KeyStorage {
   Future<void> deleteOneTimePreKey(int keyId);
   Future<void> saveRegistrationId(int id);
   Future<int?> loadRegistrationId();
+  Future<void> saveDeviceId(String id);
+  Future<String?> loadDeviceId();
   Future<void> wipeAll();
 }
 
@@ -166,6 +175,16 @@ class SecureKeyStorage implements KeyStorage {
     return value == null ? null : int.parse(value);
   }
 
+  /// Records the device id the server issued.
+  @override
+  Future<void> saveDeviceId(String id) async {
+    await _storage.write(key: _kDeviceId, value: id);
+  }
+
+  /// The device id from a previous registration, if this install has one.
+  @override
+  Future<String?> loadDeviceId() => _storage.read(key: _kDeviceId);
+
   /// Erases every stored key.
   ///
   /// Used on logout and on account deletion. After this the device cannot
@@ -254,6 +273,14 @@ class InMemoryKeyStorage implements KeyStorage {
     final value = _values[_kRegistrationId];
     return value == null ? null : int.parse(value);
   }
+
+  @override
+  Future<void> saveDeviceId(String id) async {
+    _values[_kDeviceId] = id;
+  }
+
+  @override
+  Future<String?> loadDeviceId() async => _values[_kDeviceId];
 
   @override
   Future<void> wipeAll() async => _values.clear();

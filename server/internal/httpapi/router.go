@@ -93,6 +93,9 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /v1/keys",
 		requireAuth(http.HandlerFunc(s.handleUploadPreKeys)))
 
+	mux.Handle("GET /v1/users/{id}",
+		requireAuth(http.HandlerFunc(s.handleLookupUser)))
+
 	mux.Handle("POST /v1/chats",
 		requireAuth(http.HandlerFunc(s.handleCreateChat)))
 

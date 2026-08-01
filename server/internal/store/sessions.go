@@ -46,19 +46,51 @@ func (s *Store) ListSessions(ctx context.Context, userID uuid.UUID) ([]models.Ac
 	return out, nil
 }
 
-// RevokeSession invalidates a single session.
-func (s *Store) RevokeSession(ctx context.Context, userID, sessionID uuid.UUID) error {
-	res := s.db.WithContext(ctx).
-		Model(&models.ActiveSession{}).
-		Where("id = ? AND user_id = ? AND revoked_at IS NULL", sessionID, userID).
-		Update("revoked_at", time.Now())
-	if res.Error != nil {
-		return fmt.Errorf("revoke session: %w", res.Error)
-	}
-	if res.RowsAffected == 0 {
-		return ErrNotFound
-	}
-	return nil
+// RevokeSession invalidates a single session and retires the device behind it.
+//
+// Revoking the session alone would only invalidate a token. The device would
+// stay active in the key directory, so peers would keep fetching its bundle
+// and encrypting to a device nobody can read from -- the exact situation after
+// someone replaces a phone and signs the old one out. Both are updated in one
+// transaction so a partial failure cannot leave a signed-out device still
+// receiving ciphertext.
+// Returns the id of the device that was retired, so callers can tell peers
+// which device to stop encrypting to.
+func (s *Store) RevokeSession(ctx context.Context, userID, sessionID uuid.UUID) (uuid.UUID, error) {
+	var deviceID uuid.UUID
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		now := time.Now()
+
+		var sess models.ActiveSession
+		err := tx.Where("id = ? AND user_id = ? AND revoked_at IS NULL", sessionID, userID).
+			First(&sess).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("load session: %w", err)
+		}
+		deviceID = sess.DeviceID
+
+		if err := tx.Model(&models.ActiveSession{}).
+			Where("id = ?", sessionID).
+			Update("revoked_at", now).Error; err != nil {
+			return fmt.Errorf("revoke session: %w", err)
+		}
+
+		// Scoped by user id as well, so a forged session row could not retire
+		// another account's device.
+		if err := tx.Model(&models.Device{}).
+			Where("id = ? AND user_id = ? AND revoked_at IS NULL", sess.DeviceID, userID).
+			Update("revoked_at", now).Error; err != nil {
+			return fmt.Errorf("revoke device: %w", err)
+		}
+
+		return nil
+	})
+
+	return deviceID, err
 }
 
 // TouchSession records use of a refresh token.

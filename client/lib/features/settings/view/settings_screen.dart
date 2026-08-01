@@ -18,7 +18,9 @@ class SettingsScreen extends StatelessWidget {
   final Account account;
   final List<DeviceSession> sessions;
   final void Function(DeviceSession session) onRevokeSession;
-  final VoidCallback onSignOut;
+
+  /// Called with true when the user chose to erase this device's identity.
+  final void Function({required bool forget}) onSignOut;
   final VoidCallback? onChangePassword;
 
   @override
@@ -68,7 +70,7 @@ class SettingsScreen extends StatelessWidget {
           ListTile(
             leading: Icon(Icons.logout, color: scheme.error),
             title: Text('Sign out', style: TextStyle(color: scheme.error)),
-            subtitle: const Text('Erases keys and messages on this device'),
+            subtitle: const Text('Keeps your keys so you can sign back in'),
             onTap: () => _confirmSignOut(context),
           ),
           const SizedBox(height: 24),
@@ -83,7 +85,9 @@ class SettingsScreen extends StatelessWidget {
       builder: (dialogContext) => AlertDialog(
         title: const Text('Sign out this device?'),
         content: Text(
-          'The device "${session.userAgent}" will be signed out immediately.',
+          '"${session.userAgent}" will be signed out immediately and retired: '
+          'your contacts stop encrypting new messages to it. Use this for a '
+          'phone you no longer have.',
         ),
         actions: [
           TextButton(
@@ -102,30 +106,43 @@ class SettingsScreen extends StatelessWidget {
     );
   }
 
-  /// Signing out destroys local keys, and with them the ability to read any
-  /// history stored on this device. The user must be told before, not after.
+  /// Offers the two very different kinds of sign-out.
+  ///
+  /// Erasing the keys is not just "sign out and clear data": contacts have
+  /// pinned this device's identity key, so a device that comes back with a new
+  /// one is a stranger to them and no existing conversation can continue. That
+  /// consequence has to be stated before the fact, not discovered after.
   void _confirmSignOut(BuildContext context) {
     showDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Sign out?'),
         content: const Text(
-          'Your encryption keys and all messages stored on this device will be '
-          'erased. Messages you have already sent stay with their recipients, '
-          'but this device will not be able to read its own history again.',
+          'Your messages and encryption keys stay on this device, so you can '
+          'sign back in and carry on where you left off.\n\n'
+          'Erasing everything also removes this device\'s identity. Your '
+          'contacts will see it as a new device, and existing conversations '
+          'cannot be continued.',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(),
             child: const Text('Cancel'),
           ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: Theme.of(context).colorScheme.error,
+          TextButton(
+            style: TextButton.styleFrom(
+              foregroundColor: Theme.of(context).colorScheme.error,
             ),
             onPressed: () {
               Navigator.of(dialogContext).pop();
-              onSignOut();
+              onSignOut(forget: true);
+            },
+            child: const Text('Erase everything'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.of(dialogContext).pop();
+              onSignOut(forget: false);
             },
             child: const Text('Sign out'),
           ),
@@ -144,9 +161,7 @@ class _SessionTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListTile(
-      leading: Icon(
-        session.isCurrent ? Icons.smartphone : Icons.devices_other,
-      ),
+      leading: Icon(session.isCurrent ? Icons.smartphone : Icons.devices_other),
       title: Text(
         session.userAgent.isEmpty ? 'Unknown device' : session.userAgent,
         maxLines: 1,
@@ -185,8 +200,8 @@ class _SectionHeader extends StatelessWidget {
       child: Text(
         title,
         style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              color: Theme.of(context).colorScheme.primary,
-            ),
+          color: Theme.of(context).colorScheme.primary,
+        ),
       ),
     );
   }

@@ -147,6 +147,19 @@ class ApiClient {
     );
   }
 
+  /// Resolves a user id to a username.
+  ///
+  /// Inbound messages identify their sender by id, but replying needs the
+  /// username to fetch key bundles.
+  Future<String?> lookupUsername(String userId) async {
+    try {
+      final json = await _get('/v1/users/$userId');
+      return json['username'] as String?;
+    } on ApiException {
+      return null;
+    }
+  }
+
   /// Reports how many one-time prekeys the server still holds for us.
   Future<({int available, bool shouldReplenish})> preKeyCount() async {
     final json = await _get('/v1/keys/count');
