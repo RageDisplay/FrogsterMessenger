@@ -502,8 +502,65 @@ python testdata/fanout_test.py       # шифротекст на каждое у
 ```powershell
 # В окнах серверов: Ctrl+C
 
-cd d:\VectrixSecurity\Frogster
+cd d:\VectrixSecurity\FrogsterMessenger
 docker compose -f deploy/docker-compose.yml down
 ```
 
 Данные сохранятся до следующего запуска. Чтобы стереть и их — добавьте `-v`.
+
+## Удалить следы после тестов
+
+Приложение хранит данные **не только там, куда его распаковали**. Ниже всё,
+что оно создаёт, — по местам. Порядок важен: сначала закройте приложение и
+остановите серверы, иначе файлы будут заняты.
+
+### На компьютере (Windows)
+
+| Что | Где | Зачем удалять |
+|---|---|---|
+| База сообщений | `%APPDATA%\Frogster` | Расшифрованные сообщения и ratchet-сессии |
+| Приватные ключи | `%APPDATA%\com.vectrixsecurity` | Хранилище `flutter_secure_storage`, identity устройства |
+| Открытые вложения | `%TEMP%\frogsterXXXXXX` | Каталоги с картинками, которые открывали из чата |
+| Сборка | `client\build` | 3.2 ГБ; и сам `.exe`, если распаковывали отдельно |
+
+```powershell
+Remove-Item "$env:APPDATA\Frogster" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item "$env:APPDATA\com.vectrixsecurity" -Recurse -Force -ErrorAction SilentlyContinue
+Get-ChildItem $env:TEMP -Directory -Filter "frogster*" | Remove-Item -Recurse -Force
+```
+
+Обе папки в `%APPDATA%` обязательны. `com.vectrixsecurity` — **не** Windows
+Credential Manager, а файл `flutter_secure_storage.dat`; имя берётся из
+`CompanyName` в `windows/runner/Runner.rc`. Без её удаления старая identity
+переживает «зачистку»: приложение молча продолжит работать со старыми ключами.
+
+Вложения лежат в `%TEMP%`, потому что открытие файла требует пути на диске —
+см. `_openAttachment` в `client/lib/app.dart`. Windows этот каталог сам не
+чистит.
+
+### На телефоне (Android)
+
+```powershell
+adb shell pm clear com.vectrixsecurity.frogster   # данные, но приложение остаётся
+adb uninstall com.vectrixsecurity.frogster        # удалить целиком
+```
+
+### На сервере
+
+```powershell
+docker compose -f deploy/docker-compose.yml down -v
+```
+
+`-v` сносит тома `pgdata` и `redisdata` — вместе с ними уходят учётные записи,
+публичные ключи и офлайн-очередь. Без `-v` база переживёт перезапуск, и старые
+аккаунты будут конфликтовать с новой регистрацией.
+
+Скомпилированные серверы лежат в `bin\` (около 59 МБ) — каталог генерируемый,
+удаляется целиком.
+
+### Что удалить нельзя
+
+Сам факт запуска Windows фиксирует независимо от приложения: Prefetch
+(`C:\Windows\Prefetch`), `MuiCache` в реестре, журналы событий. Это следы
+запуска любой программы, к данным Frogster они отношения не имеют. Чистить их
+имеет смысл только штатными средствами (`cleanmgr`), а не вручную.

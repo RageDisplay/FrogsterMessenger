@@ -26,6 +26,7 @@
 
     <domain-config cleartextTrafficPermitted="true">
         <!-- Development server on the local network. -->
+        <domain includeSubdomains="false">186.246.9.163</domain>
         <domain includeSubdomains="false">192.168.50.238</domain>
         <!-- The Android emulator's alias for the host machine. -->
         <domain includeSubdomains="false">10.0.2.2</domain>

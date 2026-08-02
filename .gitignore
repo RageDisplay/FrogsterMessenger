@@ -8,6 +8,18 @@ server/bin/
 **/.flutter-plugins
 **/.flutter-plugins-dependencies
 
+# Distributable artefacts. client/build/ already covers where the build tools
+# put these, but they are routinely copied out to be handed to a tester.
+*.apk
+*.aab
+*.appbundle
+
+# Server runtime data
+# filed writes uploaded attachments here (FROGSTER_BLOB_DIR, see
+# server/cmd/filed/main.go). They are per-installation test data, not source:
+# 19 MB of them reached the index before this rule existed.
+server/data/
+
 # Flutter/Dart
 .packages
 .pub-cache/
