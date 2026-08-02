@@ -348,6 +348,8 @@ AEAD доказывает лишь членство в группе, но не �
 - [docs/crypto-protocol.md](docs/crypto-protocol.md) — полное описание
   протокола: форматы сообщений, границы, таблицы мутационных проверок
 - [TESTING.md](TESTING.md) — как протестировать всё вручную, от А до Я
+- [DEPLOY.md](DEPLOY.md) — развернуть на VPS с белым IP и раздать клиентов
+  тестировщикам
 - [ADR 0001](docs/adr/0001-crypto-library-choice.md) — почему Double Ratchet
   пишется сам, а не берётся готовым (лицензии)
 - [ADR 0002](docs/adr/0002-identity-key-curve25519.md) — почему identity-ключ
