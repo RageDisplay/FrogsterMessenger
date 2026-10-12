@@ -401,6 +401,94 @@ void main() {
     });
   });
 
+  group('failed decrypts leave the session intact', () {
+    // A message that fails authentication must not change the session. If it
+    // did, a single forged, corrupted or duplicated frame -- which any relay,
+    // including the server, can produce -- would consume the key of the next
+    // genuine message and break the conversation permanently.
+
+    test('a replayed message does not consume the next key', () async {
+      final p = await _establish();
+
+      final m1 = await p.alice.encrypt(_bytes('one'));
+      final m2 = await p.alice.encrypt(_bytes('two'));
+      expect(_text(await p.bob.decrypt(m1)), 'one');
+
+      // Duplicate delivery of m1, e.g. a live send racing an offline flush.
+      await expectLater(p.bob.decrypt(m1), throwsA(isA<RatchetException>()));
+
+      expect(_text(await p.bob.decrypt(m2)), 'two');
+    });
+
+    test('a tampered body does not advance the chain', () async {
+      final p = await _establish();
+
+      final genuine = await p.alice.encrypt(_bytes('genuine'));
+      final tampered = RatchetMessage(
+        header: genuine.header,
+        ciphertext: AeadCiphertext(
+          nonce: genuine.ciphertext.nonce,
+          body: Uint8List.fromList(genuine.ciphertext.body)..[0] ^= 0x01,
+          tag: genuine.ciphertext.tag,
+        ),
+      );
+
+      await expectLater(
+          p.bob.decrypt(tampered), throwsA(isA<RatchetException>()));
+      expect(_text(await p.bob.decrypt(genuine)), 'genuine');
+    });
+
+    test('a forged ratchet key does not trigger a DH step', () async {
+      // The most damaging forgery: a header announcing a new ratchet key makes
+      // the receiver run a DH ratchet step against attacker-chosen material,
+      // replacing the root key before the tag is ever checked.
+      final p = await _establish();
+
+      final a1 = await p.alice.encrypt(_bytes('a1'));
+      expect(_text(await p.bob.decrypt(a1)), 'a1');
+
+      final attacker = await generateKeyPair();
+      final forged = RatchetMessage(
+        header: MessageHeader(
+          ratchetPublicKey: attacker.publicKey,
+          previousChainLength: 3,
+          messageNumber: 5,
+        ),
+        ciphertext: a1.ciphertext,
+      );
+      await expectLater(
+          p.bob.decrypt(forged), throwsA(isA<RatchetException>()));
+      expect(p.bob.skippedKeyCount, 0,
+          reason: 'keys stashed while processing a forgery must be rolled back');
+
+      // Both directions keep working.
+      final a2 = await p.alice.encrypt(_bytes('a2'));
+      expect(_text(await p.bob.decrypt(a2)), 'a2');
+      final b1 = await p.bob.encrypt(_bytes('b1'));
+      expect(_text(await p.alice.decrypt(b1)), 'b1');
+    });
+
+    test('a failed late message keeps its stashed key', () async {
+      final p = await _establish();
+
+      final m1 = await p.alice.encrypt(_bytes('late'));
+      final m2 = await p.alice.encrypt(_bytes('early'));
+      expect(_text(await p.bob.decrypt(m2)), 'early');
+
+      final corrupted = RatchetMessage(
+        header: m1.header,
+        ciphertext: AeadCiphertext(
+          nonce: m1.ciphertext.nonce,
+          body: m1.ciphertext.body,
+          tag: Uint8List.fromList(m1.ciphertext.tag)..[0] ^= 0x01,
+        ),
+      );
+      await expectLater(
+          p.bob.decrypt(corrupted), throwsA(isA<RatchetException>()));
+      expect(_text(await p.bob.decrypt(m1)), 'late');
+    });
+  });
+
   group('denial of service bounds', () {
     test('refuses to skip more than maxSkip keys', () async {
       // Without this cap a peer could claim message number 2^31 and force

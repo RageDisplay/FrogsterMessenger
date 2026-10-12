@@ -31,6 +31,10 @@ const int _senderChainNextSeed = 0x02;
 /// Upper bound on keys derived to catch up with an out-of-order message.
 const int senderKeyMaxSkip = 1000;
 
+/// How many skipped message keys one sender key retains before evicting the
+/// oldest. Bounds memory and storage no matter how many messages go missing.
+const int senderKeyMaxSkippedStored = 2000;
+
 /// A sender's key state for one (chat, epoch).
 class SenderKeyState {
   SenderKeyState({
@@ -41,7 +45,9 @@ class SenderKeyState {
     required Uint8List chainKey,
     required this.iteration,
     this.signingSeed,
-  }) : _chainKey = chainKey;
+    Map<int, Uint8List>? skipped,
+  })  : _chainKey = chainKey,
+        _skipped = skipped ?? <int, Uint8List>{};
 
   final String chatId;
   final int epoch;
@@ -59,7 +65,14 @@ class SenderKeyState {
   Uint8List _chainKey;
   int iteration;
 
+  /// Message keys for iterations that were skipped over, so messages that
+  /// arrive out of order still decrypt. Each is removed when used.
+  final Map<int, Uint8List> _skipped;
+
   Uint8List get chainKey => _chainKey;
+
+  /// Number of skipped keys retained, for tests and diagnostics.
+  int get skippedKeyCount => _skipped.length;
 
   Map<String, dynamic> toJson() => {
         'chat_id': chatId,
@@ -69,6 +82,10 @@ class SenderKeyState {
         if (signingSeed != null) 'sign_seed': base64Encode(signingSeed!),
         'chain_key': base64Encode(_chainKey),
         'iteration': iteration,
+        if (_skipped.isNotEmpty)
+          'skipped': {
+            for (final e in _skipped.entries) '${e.key}': base64Encode(e.value),
+          },
       };
 
   static SenderKeyState fromJson(Map<String, dynamic> json) => SenderKeyState(
@@ -81,6 +98,12 @@ class SenderKeyState {
             : base64Decode(json['sign_seed'] as String),
         chainKey: base64Decode(json['chain_key'] as String),
         iteration: json['iteration'] as int,
+        skipped: {
+          for (final e in ((json['skipped'] as Map<String, dynamic>?) ??
+                  const <String, dynamic>{})
+              .entries)
+            int.parse(e.key): base64Decode(e.value as String),
+        },
       );
 }
 
@@ -166,6 +189,23 @@ class SenderKeyMessage {
         senderDeviceId: senderDeviceId,
         iteration: iteration,
       );
+
+  /// What the sender's signature covers: the metadata *and* the ciphertext.
+  ///
+  /// Signing the metadata alone would not bind the signature to the content.
+  /// Every member holds the sender's chain key, so any member who sees a
+  /// signed message could swap in a ciphertext of their own under the same
+  /// signature -- and with the server's help deliver it as the sender's.
+  static Uint8List signaturePayload(
+    Uint8List metadata,
+    AeadCiphertext ciphertext,
+  ) {
+    final ct = ciphertext.serialize();
+    final out = Uint8List(metadata.length + ct.length);
+    out.setRange(0, metadata.length, metadata);
+    out.setRange(metadata.length, out.length, ct);
+    return out;
+  }
 
   Uint8List serialize() => Uint8List.fromList(utf8.encode(jsonEncode({
         'chat_id': chatId,
@@ -281,7 +321,10 @@ Future<SenderKeyMessage> encryptGroupMessage({
 
   // Signed so other members cannot forge messages from this sender: they all
   // hold the same symmetric key, so AEAD alone proves only group membership.
-  final signature = await sign(seed: seed, message: aad);
+  final signature = await sign(
+    seed: seed,
+    message: SenderKeyMessage.signaturePayload(aad, ciphertext),
+  );
 
   return SenderKeyMessage(
     chatId: state.chatId,
@@ -294,6 +337,9 @@ Future<SenderKeyMessage> encryptGroupMessage({
 }
 
 /// Decrypts a group message, skipping ahead if messages were missed.
+///
+/// Transactional: [state] changes only when the message authenticates, so a
+/// corrupted or replayed frame cannot consume the key of a genuine one.
 Future<Uint8List> decryptGroupMessage({
   required SenderKeyState state,
   required SenderKeyMessage message,
@@ -318,9 +364,10 @@ Future<Uint8List> decryptGroupMessage({
   // legitimate group member -- who can produce valid signatures -- could
   // otherwise force unbounded key derivation simply by claiming a huge
   // iteration. Cheap checks first.
-  if (message.iteration < state.iteration) {
-    // The chain only moves forward, so an earlier iteration cannot be derived
-    // any more. This also blocks replays.
+  final late = message.iteration < state.iteration;
+  if (late && !state._skipped.containsKey(message.iteration)) {
+    // The chain only moves forward, and a skipped key is removed when used,
+    // so this is either a replay or a message older than anything retained.
     throw SenderKeyException(
       'message iteration ${message.iteration} is behind the chain at '
       '${state.iteration}',
@@ -335,7 +382,10 @@ Future<Uint8List> decryptGroupMessage({
 
   final signatureValid = await verifySignature(
     publicKey: state.signingPublicKey,
-    message: message.signedBytes,
+    message: SenderKeyMessage.signaturePayload(
+      message.signedBytes,
+      message.ciphertext,
+    ),
     signature: message.signature,
   );
   if (!signatureValid) {
@@ -345,32 +395,53 @@ Future<Uint8List> decryptGroupMessage({
     );
   }
 
-  var chainKey = state.chainKey;
-  var iteration = state.iteration;
-  _ChainStep? step;
-
-  while (iteration <= message.iteration) {
-    step = await _advanceChain(chainKey);
-    chainKey = step.nextChainKey;
-    iteration++;
-    if (iteration <= message.iteration) {
-      wipe(step.messageKey);
-    }
+  if (late) {
+    final key = state._skipped[message.iteration]!;
+    final plaintext = await _open(key, message);
+    state._skipped.remove(message.iteration);
+    wipe(key);
+    return plaintext;
   }
 
-  state._chainKey = chainKey;
-  state.iteration = iteration;
+  // Derive into locals; nothing is written to the state until the message
+  // has authenticated.
+  var chainKey = state.chainKey;
+  final newlySkipped = <int, Uint8List>{};
+  for (var i = state.iteration; i < message.iteration; i++) {
+    final step = await _advanceChain(chainKey);
+    newlySkipped[i] = step.messageKey;
+    chainKey = step.nextChainKey;
+  }
+  final step = await _advanceChain(chainKey);
 
+  final Uint8List plaintext;
   try {
-    final plaintext = await aeadDecrypt(
-      key: step!.messageKey,
+    plaintext = await _open(step.messageKey, message);
+  } catch (_) {
+    newlySkipped.values.forEach(wipe);
+    rethrow;
+  } finally {
+    wipe(step.messageKey);
+  }
+
+  state._chainKey = step.nextChainKey;
+  state.iteration = message.iteration + 1;
+  state._skipped.addAll(newlySkipped);
+  while (state._skipped.length > senderKeyMaxSkippedStored) {
+    final oldest = state._skipped.keys.first;
+    wipe(state._skipped.remove(oldest)!);
+  }
+  return plaintext;
+}
+
+Future<Uint8List> _open(Uint8List messageKey, SenderKeyMessage message) async {
+  try {
+    return await aeadDecrypt(
+      key: messageKey,
       ciphertext: message.ciphertext,
       associatedData: message.signedBytes,
     );
-    wipe(step.messageKey);
-    return plaintext;
   } catch (e) {
-    wipe(step!.messageKey);
     throw SenderKeyException('authentication failed: $e');
   }
 }
@@ -388,8 +459,6 @@ class SenderChainStep {
   final Uint8List messageKey;
   final Uint8List nextChainKey;
 }
-
-typedef _ChainStep = SenderChainStep;
 
 Future<SenderChainStep> _advanceChain(Uint8List chainKey) async {
   final messageKey = await hmacSha256(chainKey, [_senderChainMessageSeed]);

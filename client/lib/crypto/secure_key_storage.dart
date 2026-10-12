@@ -20,7 +20,10 @@ const String _kIdentitySigningSeed = 'frogster.identity.signing.seed';
 const String _kSignedPreKeyPrivate = 'frogster.spk.private';
 const String _kSignedPreKeyId = 'frogster.spk.id';
 const String _kSignedPreKeySignature = 'frogster.spk.signature';
+const String _kSignedPreKeyCreatedAt = 'frogster.spk.created_at';
+const String _kPreviousSignedPreKey = 'frogster.spk.previous';
 const String _kOneTimePreKeyPrefix = 'frogster.otp.';
+const String _kNextOneTimePreKeyId = 'frogster.otp_next_id';
 const String _kRegistrationId = 'frogster.registration_id';
 
 /// The server-assigned device id, stored after the first registration.
@@ -41,9 +44,26 @@ abstract class KeyStorage {
   Future<IdentityKeys?> loadIdentity();
   Future<void> saveSignedPreKey(SignedPreKeyPair spk);
   Future<SignedPreKeyPair?> loadSignedPreKey();
+
+  /// The signed prekey replaced by the most recent rotation.
+  ///
+  /// Kept for a grace period because a prekey message encrypted against it
+  /// may still be in flight, or queued for this device while it was offline.
+  Future<void> savePreviousSignedPreKey(SignedPreKeyPair? spk);
+  Future<SignedPreKeyPair?> loadPreviousSignedPreKey();
+
   Future<void> saveOneTimePreKey(int keyId, KeyPair pair);
   Future<KeyPair?> loadOneTimePreKey(int keyId);
   Future<void> deleteOneTimePreKey(int keyId);
+
+  /// The id the next generated one-time prekey takes.
+  ///
+  /// Ids must never repeat while the server may still hold the old key under
+  /// the same id: a new private key saved over it would make every session
+  /// built from the old public key fail.
+  Future<int?> loadNextOneTimePreKeyId();
+  Future<void> saveNextOneTimePreKeyId(int id);
+
   Future<void> saveRegistrationId(int id);
   Future<int?> loadRegistrationId();
   Future<void> saveDeviceId(String id);
@@ -51,8 +71,158 @@ abstract class KeyStorage {
   Future<void> wipeAll();
 }
 
+/// Key-value persistence shared by [SecureKeyStorage] and
+/// [InMemoryKeyStorage], so the two cannot drift apart in encoding.
+abstract class _StringKeyStorage implements KeyStorage {
+  Future<String?> read(String key);
+  Future<void> write(String key, String value);
+  Future<void> delete(String key);
+
+  @override
+  Future<bool> hasIdentity() async => await read(_kIdentityDhPrivate) != null;
+
+  /// Creates and stores a new device identity.
+  ///
+  /// Called once, on first launch. Both key pairs are generated locally; only
+  /// the public halves are ever uploaded.
+  @override
+  Future<IdentityKeys> createIdentity() async {
+    final dh = await generateKeyPair();
+    final signing = await generateSigningKeyPair();
+    await write(_kIdentityDhPrivate, base64Encode(dh.privateKey));
+    await write(_kIdentitySigningSeed, base64Encode(signing.seed));
+    return IdentityKeys(dhKeyPair: dh, signingKeyPair: signing);
+  }
+
+  @override
+  Future<IdentityKeys?> loadIdentity() async {
+    final dhPrivate = await read(_kIdentityDhPrivate);
+    final signingSeed = await read(_kIdentitySigningSeed);
+    if (dhPrivate == null || signingSeed == null) return null;
+    return IdentityKeys(
+      dhKeyPair: await keyPairFromPrivateKey(base64Decode(dhPrivate)),
+      signingKeyPair: await signingKeyPairFromSeed(base64Decode(signingSeed)),
+    );
+  }
+
+  /// Stores the current signed prekey together with its signature.
+  ///
+  /// The legacy one-field-per-key layout is kept for the current key so that
+  /// installs from before rotation existed keep their key.
+  @override
+  Future<void> saveSignedPreKey(SignedPreKeyPair spk) async {
+    await write(_kSignedPreKeyPrivate, base64Encode(spk.keyPair.privateKey));
+    await write(_kSignedPreKeyId, spk.keyId.toString());
+    await write(_kSignedPreKeySignature, base64Encode(spk.signature));
+    if (spk.createdAt != null) {
+      await write(
+        _kSignedPreKeyCreatedAt,
+        spk.createdAt!.toUtc().toIso8601String(),
+      );
+    } else {
+      await delete(_kSignedPreKeyCreatedAt);
+    }
+  }
+
+  @override
+  Future<SignedPreKeyPair?> loadSignedPreKey() async {
+    final private = await read(_kSignedPreKeyPrivate);
+    final id = await read(_kSignedPreKeyId);
+    final signature = await read(_kSignedPreKeySignature);
+    if (private == null || id == null || signature == null) return null;
+    final createdAt = await read(_kSignedPreKeyCreatedAt);
+    return SignedPreKeyPair(
+      keyId: int.parse(id),
+      keyPair: await keyPairFromPrivateKey(base64Decode(private)),
+      signature: base64Decode(signature),
+      createdAt: createdAt == null ? null : DateTime.parse(createdAt),
+    );
+  }
+
+  @override
+  Future<void> savePreviousSignedPreKey(SignedPreKeyPair? spk) async {
+    if (spk == null) {
+      await delete(_kPreviousSignedPreKey);
+      return;
+    }
+    await write(
+      _kPreviousSignedPreKey,
+      jsonEncode({
+        'id': spk.keyId,
+        'private': base64Encode(spk.keyPair.privateKey),
+        'signature': base64Encode(spk.signature),
+        if (spk.createdAt != null)
+          'created_at': spk.createdAt!.toUtc().toIso8601String(),
+      }),
+    );
+  }
+
+  @override
+  Future<SignedPreKeyPair?> loadPreviousSignedPreKey() async {
+    final raw = await read(_kPreviousSignedPreKey);
+    if (raw == null) return null;
+    final json = jsonDecode(raw) as Map<String, dynamic>;
+    final createdAt = json['created_at'] as String?;
+    return SignedPreKeyPair(
+      keyId: json['id'] as int,
+      keyPair: await keyPairFromPrivateKey(
+        base64Decode(json['private'] as String),
+      ),
+      signature: base64Decode(json['signature'] as String),
+      createdAt: createdAt == null ? null : DateTime.parse(createdAt),
+    );
+  }
+
+  @override
+  Future<void> saveOneTimePreKey(int keyId, KeyPair pair) =>
+      write('$_kOneTimePreKeyPrefix$keyId', base64Encode(pair.privateKey));
+
+  @override
+  Future<KeyPair?> loadOneTimePreKey(int keyId) async {
+    final value = await read('$_kOneTimePreKeyPrefix$keyId');
+    if (value == null) return null;
+    return keyPairFromPrivateKey(base64Decode(value));
+  }
+
+  /// Deletes a one-time prekey once a session has consumed it.
+  ///
+  /// Retaining it would defeat the point: the forward secrecy a one-time
+  /// prekey provides depends on the private half being destroyed after use.
+  @override
+  Future<void> deleteOneTimePreKey(int keyId) =>
+      delete('$_kOneTimePreKeyPrefix$keyId');
+
+  @override
+  Future<int?> loadNextOneTimePreKeyId() async {
+    final value = await read(_kNextOneTimePreKeyId);
+    return value == null ? null : int.parse(value);
+  }
+
+  @override
+  Future<void> saveNextOneTimePreKeyId(int id) =>
+      write(_kNextOneTimePreKeyId, id.toString());
+
+  @override
+  Future<void> saveRegistrationId(int id) =>
+      write(_kRegistrationId, id.toString());
+
+  @override
+  Future<int?> loadRegistrationId() async {
+    final value = await read(_kRegistrationId);
+    return value == null ? null : int.parse(value);
+  }
+
+  /// Records the device id the server issued.
+  @override
+  Future<void> saveDeviceId(String id) => write(_kDeviceId, id);
+
+  /// The device id from a previous registration, if this install has one.
+  @override
+  Future<String?> loadDeviceId() => read(_kDeviceId);
+}
+
 /// Stores private keys in the platform keychain.
-class SecureKeyStorage implements KeyStorage {
+class SecureKeyStorage extends _StringKeyStorage {
   SecureKeyStorage({FlutterSecureStorage? storage})
     : _storage =
           storage ??
@@ -66,133 +236,22 @@ class SecureKeyStorage implements KeyStorage {
 
   final FlutterSecureStorage _storage;
 
-  /// True when this device already has an identity.
   @override
-  Future<bool> hasIdentity() async {
-    final value = await _storage.read(key: _kIdentityDhPrivate);
-    return value != null;
-  }
+  Future<String?> read(String key) => _storage.read(key: key);
 
-  /// Creates and stores a new device identity.
-  ///
-  /// Called once, on first launch. Both key pairs are generated locally; only
-  /// the public halves are ever uploaded.
   @override
-  Future<IdentityKeys> createIdentity() async {
-    final dh = await generateKeyPair();
-    final signing = await generateSigningKeyPair();
+  Future<void> write(String key, String value) =>
+      _storage.write(key: key, value: value);
 
-    await _storage.write(
-      key: _kIdentityDhPrivate,
-      value: base64Encode(dh.privateKey),
-    );
-    await _storage.write(
-      key: _kIdentitySigningSeed,
-      value: base64Encode(signing.seed),
-    );
-
-    return IdentityKeys(dhKeyPair: dh, signingKeyPair: signing);
-  }
-
-  /// Loads the stored identity, or null when this device has none yet.
   @override
-  Future<IdentityKeys?> loadIdentity() async {
-    final dhPrivate = await _storage.read(key: _kIdentityDhPrivate);
-    final signingSeed = await _storage.read(key: _kIdentitySigningSeed);
-    if (dhPrivate == null || signingSeed == null) return null;
-
-    return IdentityKeys(
-      dhKeyPair: await keyPairFromPrivateKey(base64Decode(dhPrivate)),
-      signingKeyPair: await signingKeyPairFromSeed(base64Decode(signingSeed)),
-    );
-  }
-
-  /// Stores the current signed prekey together with its signature.
-  @override
-  Future<void> saveSignedPreKey(SignedPreKeyPair spk) async {
-    await _storage.write(
-      key: _kSignedPreKeyPrivate,
-      value: base64Encode(spk.keyPair.privateKey),
-    );
-    await _storage.write(key: _kSignedPreKeyId, value: spk.keyId.toString());
-    await _storage.write(
-      key: _kSignedPreKeySignature,
-      value: base64Encode(spk.signature),
-    );
-  }
-
-  /// Loads the current signed prekey.
-  @override
-  Future<SignedPreKeyPair?> loadSignedPreKey() async {
-    final private = await _storage.read(key: _kSignedPreKeyPrivate);
-    final id = await _storage.read(key: _kSignedPreKeyId);
-    final signature = await _storage.read(key: _kSignedPreKeySignature);
-    if (private == null || id == null || signature == null) return null;
-
-    return SignedPreKeyPair(
-      keyId: int.parse(id),
-      keyPair: await keyPairFromPrivateKey(base64Decode(private)),
-      signature: base64Decode(signature),
-    );
-  }
-
-  /// Stores the private half of a one-time prekey.
-  @override
-  Future<void> saveOneTimePreKey(int keyId, KeyPair pair) async {
-    await _storage.write(
-      key: '$_kOneTimePreKeyPrefix$keyId',
-      value: base64Encode(pair.privateKey),
-    );
-  }
-
-  /// Loads a one-time prekey by id.
-  @override
-  Future<KeyPair?> loadOneTimePreKey(int keyId) async {
-    final value = await _storage.read(key: '$_kOneTimePreKeyPrefix$keyId');
-    if (value == null) return null;
-    return keyPairFromPrivateKey(base64Decode(value));
-  }
-
-  /// Deletes a one-time prekey once a session has consumed it.
-  ///
-  /// Retaining it would defeat the point: the forward secrecy a one-time
-  /// prekey provides depends on the private half being destroyed after use.
-  @override
-  Future<void> deleteOneTimePreKey(int keyId) async {
-    await _storage.delete(key: '$_kOneTimePreKeyPrefix$keyId');
-  }
-
-  /// Stores this device's registration id.
-  @override
-  Future<void> saveRegistrationId(int id) async {
-    await _storage.write(key: _kRegistrationId, value: id.toString());
-  }
-
-  /// Loads this device's registration id.
-  @override
-  Future<int?> loadRegistrationId() async {
-    final value = await _storage.read(key: _kRegistrationId);
-    return value == null ? null : int.parse(value);
-  }
-
-  /// Records the device id the server issued.
-  @override
-  Future<void> saveDeviceId(String id) async {
-    await _storage.write(key: _kDeviceId, value: id);
-  }
-
-  /// The device id from a previous registration, if this install has one.
-  @override
-  Future<String?> loadDeviceId() => _storage.read(key: _kDeviceId);
+  Future<void> delete(String key) => _storage.delete(key: key);
 
   /// Erases every stored key.
   ///
   /// Used on logout and on account deletion. After this the device cannot
   /// decrypt any past message, which is the intended behaviour.
   @override
-  Future<void> wipeAll() async {
-    await _storage.deleteAll();
-  }
+  Future<void> wipeAll() => _storage.deleteAll();
 }
 
 /// An in-memory implementation for tests and for platforms without a keychain.
@@ -200,87 +259,17 @@ class SecureKeyStorage implements KeyStorage {
 /// This is NOT secure storage: it keeps keys in the process heap and loses
 /// them on restart. It exists so unit tests can run without a platform
 /// channel, and must never be selected on a real device.
-class InMemoryKeyStorage implements KeyStorage {
+class InMemoryKeyStorage extends _StringKeyStorage {
   final Map<String, String> _values = {};
 
   @override
-  Future<bool> hasIdentity() async => _values.containsKey(_kIdentityDhPrivate);
+  Future<String?> read(String key) async => _values[key];
 
   @override
-  Future<IdentityKeys> createIdentity() async {
-    final dh = await generateKeyPair();
-    final signing = await generateSigningKeyPair();
-    _values[_kIdentityDhPrivate] = base64Encode(dh.privateKey);
-    _values[_kIdentitySigningSeed] = base64Encode(signing.seed);
-    return IdentityKeys(dhKeyPair: dh, signingKeyPair: signing);
-  }
+  Future<void> write(String key, String value) async => _values[key] = value;
 
   @override
-  Future<IdentityKeys?> loadIdentity() async {
-    final dhPrivate = _values[_kIdentityDhPrivate];
-    final signingSeed = _values[_kIdentitySigningSeed];
-    if (dhPrivate == null || signingSeed == null) return null;
-    return IdentityKeys(
-      dhKeyPair: await keyPairFromPrivateKey(base64Decode(dhPrivate)),
-      signingKeyPair: await signingKeyPairFromSeed(base64Decode(signingSeed)),
-    );
-  }
-
-  @override
-  Future<void> saveSignedPreKey(SignedPreKeyPair spk) async {
-    _values[_kSignedPreKeyPrivate] = base64Encode(spk.keyPair.privateKey);
-    _values[_kSignedPreKeyId] = spk.keyId.toString();
-    _values[_kSignedPreKeySignature] = base64Encode(spk.signature);
-  }
-
-  @override
-  Future<SignedPreKeyPair?> loadSignedPreKey() async {
-    final private = _values[_kSignedPreKeyPrivate];
-    final id = _values[_kSignedPreKeyId];
-    final signature = _values[_kSignedPreKeySignature];
-    if (private == null || id == null || signature == null) return null;
-    return SignedPreKeyPair(
-      keyId: int.parse(id),
-      keyPair: await keyPairFromPrivateKey(base64Decode(private)),
-      signature: base64Decode(signature),
-    );
-  }
-
-  @override
-  Future<void> saveOneTimePreKey(int keyId, KeyPair pair) async {
-    _values['$_kOneTimePreKeyPrefix$keyId'] = base64Encode(pair.privateKey);
-  }
-
-  @override
-  Future<KeyPair?> loadOneTimePreKey(int keyId) async {
-    final value = _values['$_kOneTimePreKeyPrefix$keyId'];
-    if (value == null) return null;
-    return keyPairFromPrivateKey(base64Decode(value));
-  }
-
-  @override
-  Future<void> deleteOneTimePreKey(int keyId) async {
-    _values.remove('$_kOneTimePreKeyPrefix$keyId');
-  }
-
-  @override
-  Future<void> saveRegistrationId(int id) async {
-    _values[_kRegistrationId] = id.toString();
-  }
-
-  @override
-  Future<int?> loadRegistrationId() async {
-    final value = _values[_kRegistrationId];
-    return value == null ? null : int.parse(value);
-  }
-
-  @override
-  Future<void> saveDeviceId(String id) async {
-    _values[_kDeviceId] = id;
-  }
-
-  @override
-  Future<String?> loadDeviceId() async => _values[_kDeviceId];
+  Future<void> delete(String key) async => _values.remove(key);
 
   @override
   Future<void> wipeAll() async => _values.clear();

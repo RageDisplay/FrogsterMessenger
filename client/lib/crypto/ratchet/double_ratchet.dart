@@ -250,7 +250,32 @@ class RatchetSession {
   }
 
   /// Decrypts a message, handling out-of-order and skipped messages.
+  ///
+  /// Transactional: the session changes only if the message authenticates.
+  /// The specification requires this, and it is not a formality. Processing a
+  /// header advances chains, stashes skipped keys and may run a DH ratchet
+  /// step before the tag is checked; if a forged, corrupted or replayed
+  /// message left those changes behind, the key for the next genuine message
+  /// would already be consumed and the conversation would break for good --
+  /// a denial of service any relay (including the server) could trigger with
+  /// one frame.
   Future<Uint8List> decrypt(RatchetMessage message) async {
+    final snapshot = _snapshot();
+    try {
+      final plaintext = await _decryptUnchecked(message);
+      for (final key in _evictedPendingWipe) {
+        wipe(key);
+      }
+      _evictedPendingWipe.clear();
+      return plaintext;
+    } catch (e) {
+      _restore(snapshot);
+      if (e is RatchetException) rethrow;
+      throw RatchetException('cannot process message: $e');
+    }
+  }
+
+  Future<Uint8List> _decryptUnchecked(RatchetMessage message) async {
     // A key stashed earlier for a message that arrived late.
     final stashed = _takeSkipped(message.header);
     if (stashed != null) {
@@ -372,8 +397,42 @@ class RatchetSession {
     while (_skipped.length > maxSkippedKeysStored) {
       final oldest = _skipped.keys.first;
       final key = _skipped.remove(oldest);
-      if (key != null) wipe(key);
+      // Wiped only once the decrypt commits: a rollback puts the key back.
+      if (key != null) _evictedPendingWipe.add(key);
     }
+  }
+
+  /// Keys evicted during the decrypt in progress, wiped when it commits.
+  final List<Uint8List> _evictedPendingWipe = [];
+
+  _SessionSnapshot _snapshot() => _SessionSnapshot(
+        rootKey: _rootKey,
+        sendingRatchetKeyPair: _sendingRatchetKeyPair,
+        receivingRatchetKey: _receivingRatchetKey,
+        sendingChainKey: _sendingChainKey,
+        receivingChainKey: _receivingChainKey,
+        sendCount: _sendCount,
+        receiveCount: _receiveCount,
+        previousSendCount: _previousSendCount,
+        skipped: Map.of(_skipped),
+      );
+
+  // Restoring references is enough: the decrypt path replaces key buffers
+  // rather than overwriting them, and defers the only in-place wipe (eviction)
+  // until commit.
+  void _restore(_SessionSnapshot s) {
+    _rootKey = s.rootKey;
+    _sendingRatchetKeyPair = s.sendingRatchetKeyPair;
+    _receivingRatchetKey = s.receivingRatchetKey;
+    _sendingChainKey = s.sendingChainKey;
+    _receivingChainKey = s.receivingChainKey;
+    _sendCount = s.sendCount;
+    _receiveCount = s.receiveCount;
+    _previousSendCount = s.previousSendCount;
+    _skipped
+      ..clear()
+      ..addAll(s.skipped);
+    _evictedPendingWipe.clear();
   }
 
   Uint8List _aad(MessageHeader header) {
@@ -443,6 +502,31 @@ class RatchetSession {
       skipped: skipped,
     );
   }
+}
+
+/// The mutable fields of a [RatchetSession], captured before a decrypt.
+class _SessionSnapshot {
+  const _SessionSnapshot({
+    required this.rootKey,
+    required this.sendingRatchetKeyPair,
+    required this.receivingRatchetKey,
+    required this.sendingChainKey,
+    required this.receivingChainKey,
+    required this.sendCount,
+    required this.receiveCount,
+    required this.previousSendCount,
+    required this.skipped,
+  });
+
+  final Uint8List rootKey;
+  final KeyPair? sendingRatchetKeyPair;
+  final Uint8List? receivingRatchetKey;
+  final Uint8List? sendingChainKey;
+  final Uint8List? receivingChainKey;
+  final int sendCount;
+  final int receiveCount;
+  final int previousSendCount;
+  final Map<_SkippedKeyId, Uint8List> skipped;
 }
 
 /// Output of the root KDF.
