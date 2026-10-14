@@ -40,6 +40,7 @@ type harness struct {
 	client  frogsterv1.FileTransferClient
 	blobDir string
 	token   string
+	tokens  *auth.Manager
 }
 
 func newHarness(t *testing.T, deviceActive bool) *harness {
@@ -93,6 +94,7 @@ func newHarness(t *testing.T, deviceActive bool) *harness {
 		client:  frogsterv1.NewFileTransferClient(conn),
 		blobDir: blobDir,
 		token:   token,
+		tokens:  tokens,
 	}
 }
 
@@ -471,5 +473,35 @@ func TestLargeStreamingUpload(t *testing.T) {
 	}
 	if !bytes.Equal(got, payload) {
 		t.Error("5 MiB round trip did not preserve the bytes")
+	}
+}
+
+// TestOnlyUploaderCanDelete: blob ids travel inside chat messages, so every
+// recipient knows them. Any of them deleting the blob would remove the
+// attachment for everyone.
+func TestOnlyUploaderCanDelete(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t, true)
+	ctx := h.authCtx(t)
+
+	blobID, err := h.upload(t, ctx, []byte("shared attachment"), nil)
+	if err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	otherToken, err := h.tokens.IssueAccess(uuid.New(), uuid.New(), 1)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+	otherCtx := metadata.AppendToOutgoingContext(context.Background(),
+		"authorization", "Bearer "+otherToken)
+
+	_, err = h.client.Delete(otherCtx, &frogsterv1.DeleteRequest{BlobId: blobID})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("delete by a recipient: got %v, want PermissionDenied", err)
+	}
+	if _, err := h.download(t, ctx, blobID); err != nil {
+		t.Errorf("blob gone after a refused delete: %v", err)
 	}
 }

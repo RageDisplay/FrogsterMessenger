@@ -1,11 +1,15 @@
 package ratelimit
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
+	"strings"
+	"sync"
 )
 
 // maxDrainBytes caps how much of a rejected request's body is read before
@@ -75,21 +79,37 @@ func ByIP(prefix string) KeyFunc {
 	}
 }
 
-// ClientIP extracts the client address, honouring X-Forwarded-For only for its
-// first entry.
+// ClientIP extracts the address of the client that made the request.
 //
-// Trusting this header requires a proxy that overwrites it; when the server is
-// exposed directly, a client can forge it and evade IP limits. Deploy behind a
-// proxy that strips inbound values.
+// X-Forwarded-For is honoured only when the request arrived from a trusted
+// proxy (see SetTrustedProxies), and then it is read from the right: each
+// proxy appends the address it received the request from, so the rightmost
+// entry that is not itself a trusted proxy is the real client. The leftmost
+// entry is whatever the client chose to send, and trusting it would let anyone
+// pick their own rate-limit bucket.
 func ClientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		for i := range len(xff) {
-			if xff[i] == ',' {
-				return trimSpace(xff[:i])
+	remote := remoteHost(r)
+	if !isTrustedProxy(remote) {
+		return remote
+	}
+
+	xff := r.Header.Values("X-Forwarded-For")
+	for i := len(xff) - 1; i >= 0; i-- {
+		parts := strings.Split(xff[i], ",")
+		for j := len(parts) - 1; j >= 0; j-- {
+			candidate := strings.TrimSpace(parts[j])
+			if candidate == "" {
+				continue
+			}
+			if !isTrustedProxy(candidate) {
+				return candidate
 			}
 		}
-		return trimSpace(xff)
 	}
+	return remote
+}
+
+func remoteHost(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
@@ -97,13 +117,50 @@ func ClientIP(r *http.Request) string {
 	return host
 }
 
-func trimSpace(s string) string {
-	start, end := 0, len(s)
-	for start < end && (s[start] == ' ' || s[start] == '\t') {
-		start++
+var (
+	trustedMu      sync.RWMutex
+	trustedProxies []netip.Prefix
+)
+
+// SetTrustedProxies configures which peers may set X-Forwarded-For, as CIDR
+// prefixes or single addresses. With none configured the header is ignored
+// and the TCP peer address is used, which is the safe default for a server
+// exposed directly.
+func SetTrustedProxies(specs []string) error {
+	prefixes := make([]netip.Prefix, 0, len(specs))
+	for _, spec := range specs {
+		spec = strings.TrimSpace(spec)
+		if spec == "" {
+			continue
+		}
+		if p, err := netip.ParsePrefix(spec); err == nil {
+			prefixes = append(prefixes, p.Masked())
+			continue
+		}
+		addr, err := netip.ParseAddr(spec)
+		if err != nil {
+			return fmt.Errorf("trusted proxy %q is neither an address nor a CIDR prefix", spec)
+		}
+		prefixes = append(prefixes, netip.PrefixFrom(addr, addr.BitLen()))
 	}
-	for end > start && (s[end-1] == ' ' || s[end-1] == '\t') {
-		end--
+	trustedMu.Lock()
+	trustedProxies = prefixes
+	trustedMu.Unlock()
+	return nil
+}
+
+func isTrustedProxy(host string) bool {
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
 	}
-	return s[start:end]
+	addr = addr.Unmap()
+	trustedMu.RLock()
+	defer trustedMu.RUnlock()
+	for _, p := range trustedProxies {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }

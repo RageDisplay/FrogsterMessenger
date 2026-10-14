@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"crypto/ed25519"
 	"errors"
 	"net/http"
 
@@ -202,4 +203,54 @@ func (s *Server) handleUploadPreKeys(w http.ResponseWriter, r *http.Request) {
 
 	s.log.Info("prekeys uploaded", "device_id", claims.DeviceID, "count", len(keys))
 	writeJSON(w, http.StatusOK, map[string]any{"accepted": len(keys)}, s.log)
+}
+
+// handleRotateSignedPreKey replaces the calling device's signed prekey.
+//
+// The signature is checked here even though every peer verifies it again:
+// accepting a key that fails verification would make this device unreachable
+// for new sessions until its next rotation, and a client bug is far likelier
+// than an attack at this point.
+func (s *Server) handleRotateSignedPreKey(w http.ResponseWriter, r *http.Request) {
+	claims, ok := claimsOrUnauthorized(w, r, s)
+	if !ok {
+		return
+	}
+
+	var req signedPreKeyJSON
+	if err := decodeJSON(w, r, &req, maxTokenBody); err != nil {
+		writeErr(w, http.StatusBadRequest, "malformed request body", s.log)
+		return
+	}
+	if len(req.PublicKey) != curve25519PubLen || len(req.Signature) != signatureLen {
+		writeErr(w, http.StatusBadRequest, "public_key must be 33 bytes and signature 64", s.log)
+		return
+	}
+
+	device, err := s.store.DeviceByID(r.Context(), claims.DeviceID)
+	if err != nil || !device.IsActive() {
+		writeErr(w, http.StatusUnauthorized, "unauthorized", s.log)
+		return
+	}
+	if len(device.IdentityKeyEd25519) == ed25519PubLen {
+		// Clients sign the raw 32-byte key, without the DJB type prefix.
+		if !ed25519.Verify(device.IdentityKeyEd25519, req.PublicKey[1:], req.Signature) {
+			writeErr(w, http.StatusBadRequest, "signature does not verify", s.log)
+			return
+		}
+	}
+
+	spk := &models.SignedPreKey{
+		KeyID:     req.KeyID,
+		PublicKey: req.PublicKey,
+		Signature: req.Signature,
+	}
+	if err := s.store.ReplaceSignedPreKey(r.Context(), claims.DeviceID, spk); err != nil {
+		s.log.Error("replace signed prekey", "err", err, "device_id", claims.DeviceID)
+		writeErr(w, http.StatusInternalServerError, "internal error", s.log)
+		return
+	}
+
+	s.log.Info("signed prekey rotated", "device_id", claims.DeviceID, "key_id", req.KeyID)
+	writeJSON(w, http.StatusOK, map[string]any{"key_id": req.KeyID}, s.log)
 }

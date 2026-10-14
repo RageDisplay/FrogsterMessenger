@@ -36,6 +36,10 @@ type Message struct {
 	SenderID    uuid.UUID `gorm:"type:uuid;index;not null" json:"sender_id"`
 	SenderDevID uuid.UUID `gorm:"type:uuid;not null" json:"sender_device_id"`
 
+	// ClientID is the id the sending client chose. Recipients see this id on
+	// every delivery path, and a resend with the same id is deduplicated.
+	ClientID *string `gorm:"type:varchar(64)" json:"client_id,omitempty"`
+
 	// Ciphertext is opaque. Nothing on the server parses, inspects, or logs it.
 	Ciphertext []byte `gorm:"type:bytea;not null" json:"-"`
 
@@ -47,6 +51,14 @@ type Message struct {
 
 	CreatedAt time.Time  `gorm:"index" json:"created_at"`
 	ExpiresAt *time.Time `gorm:"index" json:"expires_at,omitempty"`
+}
+
+// WireID is the id clients know this message by.
+func (m *Message) WireID() string {
+	if m.ClientID != nil && *m.ClientID != "" {
+		return *m.ClientID
+	}
+	return m.ID.String()
 }
 
 // BeforeCreate assigns a UUID when one was not supplied.

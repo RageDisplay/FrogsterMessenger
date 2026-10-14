@@ -14,6 +14,10 @@ import (
 // crashes without cleaning up, its keys simply lapse.
 const presenceTTL = 90 * time.Second
 
+// presenceRefreshInterval leaves two refresh attempts inside one TTL, so a
+// single slow Redis call does not let a live device lapse.
+const presenceRefreshInterval = 30 * time.Second
+
 // Presence records which instance holds which device's socket.
 type Presence struct {
 	rdb    *redis.Client

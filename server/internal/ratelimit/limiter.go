@@ -47,4 +47,13 @@ var (
 	// cannot inspect them, so an unbounded uploader could fill the disk with
 	// material nobody can audit.
 	RuleUpload = Rule{Burst: 20, Rate: 20, Period: time.Hour}
+	// RuleRefresh bounds token refreshes per address. A device refreshes
+	// about every quarter hour; the headroom covers several devices behind
+	// one NAT and retries.
+	RuleRefresh = Rule{Burst: 60, Rate: 60, Period: 15 * time.Minute}
+	// RulePassword guards password changes, which verify the current
+	// password and so double as a guessing oracle for a stolen token.
+	RulePassword = Rule{Burst: 5, Rate: 5, Period: time.Hour}
+	// RuleAPI is the general budget for authenticated REST calls.
+	RuleAPI = Rule{Burst: 120, Rate: 120, Period: time.Minute}
 )

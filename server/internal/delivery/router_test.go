@@ -65,18 +65,20 @@ func TestCipherTypeForFallsBackToMessage(t *testing.T) {
 	}
 }
 
-// TestEnvelopeIDKeepsSenderID confirms the acknowledgement carries the id the
-// sender generated, so their optimistically rendered copy can be matched up
-// rather than duplicated.
-func TestEnvelopeIDKeepsSenderID(t *testing.T) {
+// TestWireIDKeepsSenderID confirms every delivery carries the id the sender
+// generated, so the sender's optimistically rendered copy, the recipients'
+// copies and any later reply or reaction all refer to one message.
+func TestWireIDKeepsSenderID(t *testing.T) {
 	t.Parallel()
 
-	msg := &models.Message{ID: uuid.New()}
-
-	if got := envelopeID(&ws.Envelope{ID: "client-generated"}, msg); got != "client-generated" {
+	clientID := "client-generated"
+	msg := &models.Message{ID: uuid.New(), ClientID: &clientID}
+	if got := msg.WireID(); got != clientID {
 		t.Errorf("got %q, want the sender's id", got)
 	}
-	if got := envelopeID(&ws.Envelope{}, msg); got != msg.ID.String() {
+
+	legacy := &models.Message{ID: uuid.New()}
+	if got := legacy.WireID(); got != legacy.ID.String() {
 		t.Errorf("got %q, want the server id when the sender supplied none", got)
 	}
 }

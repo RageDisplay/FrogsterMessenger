@@ -136,16 +136,44 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	client.Start()
 
 	// Presence and backlog flush run outside the request context, which is
-	// cancelled as soon as the handshake completes.
+	// cancelled as soon as the handshake completes. They live as long as the
+	// connection instead: a large backlog drains at the pace of the socket.
+	connCtx, cancelConn := context.WithCancel(context.Background())
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		<-client.done()
+		cancelConn()
+	}()
 
-		if err := h.presence.Set(ctx, key); err != nil {
+	go func() {
+		setCtx, cancel := context.WithTimeout(connCtx, 10*time.Second)
+		if err := h.presence.Set(setCtx, key); err != nil {
 			h.log.Warn("set presence", "err", err, "device_id", key.DeviceID)
 		}
+		cancel()
+
 		if h.onConnect != nil {
-			h.onConnect(ctx, key)
+			h.onConnect(connCtx, key)
+		}
+	}()
+
+	// Presence keys expire so a crashed instance cleans up after itself; a
+	// live connection has to keep extending its own, or after presenceTTL
+	// other instances would treat the device as offline and stop routing
+	// live traffic to it.
+	go func() {
+		ticker := time.NewTicker(presenceRefreshInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-connCtx.Done():
+				return
+			case <-ticker.C:
+				refreshCtx, cancel := context.WithTimeout(connCtx, 5*time.Second)
+				if err := h.presence.Refresh(refreshCtx, key); err != nil {
+					h.log.Warn("refresh presence", "err", err, "device_id", key.DeviceID)
+				}
+				cancel()
+			}
 		}
 	}()
 

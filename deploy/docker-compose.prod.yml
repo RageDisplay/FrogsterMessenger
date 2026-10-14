@@ -1,0 +1,117 @@
+# Production stack: everything Frogster needs on one host.
+#
+# Managed by deploy/install.sh, which writes deploy/.env (secrets) and
+# deploy/Caddyfile (TLS mode) next to this file. Only Caddy is reachable from
+# outside, on 80/443; the database, Redis and both servers live on an internal
+# network with no published ports.
+
+name: frogster
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: frogster
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run deploy/install.sh to generate deploy/.env}
+      POSTGRES_DB: frogster
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U frogster -d frogster"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    shm_size: 128mb
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?}"]
+    volumes:
+      - redisdata:/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?}
+
+  frogsterd:
+    build:
+      context: ../server
+      args:
+        VERSION: ${FROGSTER_VERSION:-dev}
+    image: frogster-server:${FROGSTER_VERSION:-dev}
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/frogsterd"]
+    environment: &server-env
+      FROGSTER_ENV: prod
+      FROGSTER_ADDR: ":8080"
+      FROGSTER_FILED_ADDR: ":8081"
+      FROGSTER_DATABASE_URL: postgres://frogster:${POSTGRES_PASSWORD}@postgres:5432/frogster?sslmode=disable
+      FROGSTER_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      FROGSTER_JWT_SECRET: ${FROGSTER_JWT_SECRET:?}
+      FROGSTER_STORAGE_KEY: ${FROGSTER_STORAGE_KEY:?}
+      FROGSTER_ALLOWED_ORIGINS: ${FROGSTER_ALLOWED_ORIGINS:-}
+      # Only Caddy can reach these containers, so every peer on a private
+      # range is the proxy and its X-Forwarded-For can be believed.
+      FROGSTER_TRUSTED_PROXIES: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      FROGSTER_LOG_LEVEL: ${FROGSTER_LOG_LEVEL:-info}
+      FROGSTER_BLOB_DIR: /var/lib/frogster/blobs
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/frogsterd", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  filed:
+    image: frogster-server:${FROGSTER_VERSION:-dev}
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/filed"]
+    environment: *server-env
+    volumes:
+      - blobs:/var/lib/frogster/blobs
+    depends_on:
+      # frogsterd runs the migrations; filed only reads.
+      frogsterd: { condition: service_healthy }
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/filed", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      frogsterd: { condition: service_healthy }
+    networks: [backend]
+
+volumes:
+  pgdata:
+  redisdata:
+  blobs:
+  caddy_data:
+  caddy_config:
+
+networks:
+  backend:

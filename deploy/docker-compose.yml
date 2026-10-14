@@ -8,7 +8,10 @@ services:
       POSTGRES_PASSWORD: frogster
       POSTGRES_DB: frogster
     ports:
-      - "5432:5432"
+      # Loopback only: this file is for local development. Override with
+      # POSTGRES_PORT when 5432 falls inside a range Windows reserves for
+      # Hyper-V/WSL (check: netsh interface ipv4 show excludedportrange tcp).
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -24,7 +27,7 @@ services:
       # Published on 16379 rather than 6379: Windows reserves 6322-6421 for
       # Hyper-V/WSL, and Docker cannot bind inside a reserved range even though
       # nothing is listening there. Override with REDIS_PORT if 16379 clashes.
-      - "${REDIS_PORT:-16379}:6379"
+      - "127.0.0.1:${REDIS_PORT:-16379}:6379"
     volumes:
       - redisdata:/data
     healthcheck:

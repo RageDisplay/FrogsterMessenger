@@ -7,8 +7,10 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -31,40 +33,77 @@ type Config struct {
 	// NodeID identifies this instance in Redis presence keys. Generated per
 	// process when unset.
 	NodeID string
+
+	// AllowedOrigins lists browser origins permitted to open a WebSocket.
+	// Native clients send no Origin header and are always allowed.
+	AllowedOrigins []string
+
+	// TrustedProxies lists the addresses or CIDR prefixes of reverse proxies
+	// whose X-Forwarded-For header is believed. Empty means the header is
+	// ignored, which is right when the server is exposed directly.
+	TrustedProxies []string
+
+	// QueueRetention bounds how long an undelivered message waits for a
+	// device that never comes back.
+	QueueRetention time.Duration
+
+	LogLevel slog.Level
 }
 
 // Load reads configuration from the environment, applying dev-friendly
 // defaults. It returns an error when a value required in production is
-// missing or obviously unsafe.
+// missing or obviously unsafe, and when any value fails to parse: silently
+// falling back to a default would turn a typo in a TTL into a different
+// security posture.
 func Load() (*Config, error) {
+	var errs []error
 	c := &Config{
 		Env:             env("FROGSTER_ENV", "dev"),
 		Addr:            env("FROGSTER_ADDR", ":8080"),
 		DatabaseURL:     env("FROGSTER_DATABASE_URL", "postgres://frogster:frogster@localhost:5432/frogster?sslmode=disable"),
 		RedisURL:        env("FROGSTER_REDIS_URL", "redis://localhost:6379/0"),
-		AccessTokenTTL:  envDuration("FROGSTER_ACCESS_TTL", 15*time.Minute),
-		RefreshTokenTTL: envDuration("FROGSTER_REFRESH_TTL", 30*24*time.Hour),
-		BcryptCost:      envInt("FROGSTER_BCRYPT_COST", 12),
+		AccessTokenTTL:  envDuration("FROGSTER_ACCESS_TTL", 15*time.Minute, &errs),
+		RefreshTokenTTL: envDuration("FROGSTER_REFRESH_TTL", 30*24*time.Hour, &errs),
+		BcryptCost:      envInt("FROGSTER_BCRYPT_COST", 12, &errs),
 		NodeID:          env("FROGSTER_NODE_ID", ""),
+		AllowedOrigins:  splitList(os.Getenv("FROGSTER_ALLOWED_ORIGINS")),
+		TrustedProxies:  splitList(os.Getenv("FROGSTER_TRUSTED_PROXIES")),
+		QueueRetention:  envDuration("FROGSTER_QUEUE_RETENTION", 30*24*time.Hour, &errs),
+	}
+
+	switch c.Env {
+	case "dev", "prod":
+	default:
+		errs = append(errs, fmt.Errorf("FROGSTER_ENV must be dev or prod, got %q", c.Env))
+	}
+
+	if err := c.LogLevel.UnmarshalText([]byte(env("FROGSTER_LOG_LEVEL", "info"))); err != nil {
+		errs = append(errs, fmt.Errorf("FROGSTER_LOG_LEVEL: %w", err))
 	}
 
 	secret := os.Getenv("FROGSTER_JWT_SECRET")
 	if secret == "" {
 		if c.Env != "dev" {
-			return nil, errors.New("FROGSTER_JWT_SECRET is required outside dev")
+			errs = append(errs, errors.New("FROGSTER_JWT_SECRET is required outside dev"))
 		}
 		// Deterministic dev-only key. Never used when FROGSTER_ENV != dev.
 		secret = "dev-only-insecure-jwt-secret-do-not-use-in-production"
 	}
 	if c.Env != "dev" && len(secret) < 32 {
-		return nil, fmt.Errorf("FROGSTER_JWT_SECRET must be >= 32 bytes, got %d", len(secret))
+		errs = append(errs, fmt.Errorf("FROGSTER_JWT_SECRET must be >= 32 bytes, got %d", len(secret)))
 	}
 	c.JWTSecret = []byte(secret)
 
 	if c.BcryptCost < 10 || c.BcryptCost > 31 {
-		return nil, fmt.Errorf("FROGSTER_BCRYPT_COST must be in [10,31], got %d", c.BcryptCost)
+		errs = append(errs, fmt.Errorf("FROGSTER_BCRYPT_COST must be in [10,31], got %d", c.BcryptCost))
+	}
+	if c.AccessTokenTTL <= 0 || c.RefreshTokenTTL <= c.AccessTokenTTL {
+		errs = append(errs, errors.New("token TTLs must be positive and the refresh TTL longer than the access TTL"))
 	}
 
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
 	return c, nil
 }
 
@@ -78,26 +117,39 @@ func env(key, def string) string {
 	return def
 }
 
-func envInt(key string, def int) int {
+func envInt(key string, def int, errs *[]error) int {
 	v := os.Getenv(key)
 	if v == "" {
 		return def
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
+		*errs = append(*errs, fmt.Errorf("%s: %q is not an integer", key, v))
 		return def
 	}
 	return n
 }
 
-func envDuration(key string, def time.Duration) time.Duration {
+func envDuration(key string, def time.Duration, errs *[]error) time.Duration {
 	v := os.Getenv(key)
 	if v == "" {
 		return def
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
+		*errs = append(*errs, fmt.Errorf("%s: %q is not a duration (e.g. 15m, 720h)", key, v))
 		return def
 	}
 	return d
+}
+
+// splitList parses a comma-separated list, dropping empty entries.
+func splitList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }

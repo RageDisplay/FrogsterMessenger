@@ -5,6 +5,7 @@ package delivery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -17,9 +18,13 @@ import (
 	"github.com/vectrixsecurity/frogster/server/internal/ws"
 )
 
-// maxFlushBatch bounds how much backlog is pushed on reconnect, so a device
-// returning after a long absence cannot be swamped in one burst.
-const maxFlushBatch = 500
+// flushPageSize is how many queued deliveries are read per query while
+// draining a device's backlog. Pages are pushed with backpressure, so this
+// bounds memory per query rather than the size of the backlog.
+const flushPageSize = 100
+
+// maxClientIDLength mirrors messages.client_id.
+const maxClientIDLength = 64
 
 // Router delivers messages to devices.
 type Router struct {
@@ -78,6 +83,13 @@ func (r *Router) Send(ctx context.Context, env *ws.Envelope) (*models.Message, e
 		CipherType:  messageCipherType(env),
 		ContentHint: env.ContentHint,
 	}
+	if env.ID != "" {
+		if len(env.ID) > maxClientIDLength {
+			return nil, fmt.Errorf("message id longer than %d bytes", maxClientIDLength)
+		}
+		id := env.ID
+		msg.ClientID = &id
+	}
 
 	// A direct message carries per-device payloads and no shared ciphertext.
 	// The messages table requires one, so store an empty marker there and keep
@@ -111,6 +123,13 @@ func (r *Router) Send(ctx context.Context, env *ws.Envelope) (*models.Message, e
 	}
 
 	if err := r.store.PersistMessage(ctx, msg, deliveries); err != nil {
+		if errors.Is(err, store.ErrDuplicateMessage) {
+			// A resend after a lost acknowledgement. The recipients already
+			// have it queued or delivered; the sender only needs the ack.
+			r.log.Info("duplicate message acknowledged again",
+				"message_id", msg.ID, "chat_id", msg.ChatID, "seq", msg.Seq)
+			return msg, nil
+		}
 		return nil, fmt.Errorf("persist message: %w", err)
 	}
 
@@ -125,14 +144,13 @@ func (r *Router) Send(ctx context.Context, env *ws.Envelope) (*models.Message, e
 		"ciphertext_bytes", len(msg.Ciphertext),
 	)
 
-	livelyDelivered := make([]uint64, 0, len(deliveries))
 	for _, d := range deliveries {
 		// Each device receives only its own ciphertext. Broadcasting one
 		// payload to every device would be undecryptable for all but one.
 		out := &ws.Envelope{
 			Version:     1,
 			Type:        ws.TypeMessage,
-			ID:          envelopeID(env, msg),
+			ID:          msg.WireID(),
 			ChatID:      msg.ChatID,
 			Sender:      &ws.Address{UserID: msg.SenderID, DeviceID: msg.SenderDevID},
 			Recipient:   &ws.Address{UserID: d.UserID, DeviceID: d.DeviceID},
@@ -142,24 +160,20 @@ func (r *Router) Send(ctx context.Context, env *ws.Envelope) (*models.Message, e
 			Timestamp:   msg.CreatedAt.UnixMilli(),
 			Seq:         msg.Seq,
 		}
-		if r.deliverToDevice(ctx, ws.ClientKey{UserID: d.UserID, DeviceID: d.DeviceID}, out) {
-			livelyDelivered = append(livelyDelivered, d.ID)
-		}
-	}
-
-	// Retire the rows that reached a live socket. Leaving them pending would
-	// replay every message on the next reconnect, and a ratchet message cannot
-	// be decrypted a second time -- its message key is destroyed on first use,
-	// so the replay fails authentication and the conversation appears broken.
-	if len(livelyDelivered) > 0 {
-		if err := r.store.MarkDelivered(ctx, livelyDelivered); err != nil {
-			// Not fatal: the message was delivered. Worst case it is replayed
-			// and the client rejects the duplicate.
-			r.log.Warn("mark live delivery", "err", err, "count", len(livelyDelivered))
-		}
+		// The row stays pending until the device acknowledges it. Handing a
+		// frame to a socket proves nothing: the connection can die with the
+		// frame still in its buffer, and a row retired at that point would be
+		// lost for good. A redelivery is harmless, because it carries the same
+		// id and the client drops ids it already holds.
+		r.deliverToDevice(ctx, ws.ClientKey{UserID: d.UserID, DeviceID: d.DeviceID}, out)
 	}
 
 	return msg, nil
+}
+
+// Acknowledge retires the deliveries a device reports having stored.
+func (r *Router) Acknowledge(ctx context.Context, key ws.ClientKey, wireIDs []string) (int64, error) {
+	return r.store.AcknowledgeDeliveries(ctx, key.UserID, key.DeviceID, wireIDs)
 }
 
 // messageCipherType picks the type recorded on the message row.
@@ -179,15 +193,6 @@ func messageCipherType(env *ws.Envelope) uint8 {
 		}
 	}
 	return models.CipherTypeWhisper
-}
-
-// envelopeID keeps the sender's own message id when they supplied one, so the
-// acknowledgement correlates with the copy already rendered on their screen.
-func envelopeID(env *ws.Envelope, msg *models.Message) string {
-	if env.ID != "" {
-		return env.ID
-	}
-	return msg.ID.String()
 }
 
 // ciphertextFor picks the per-device payload when there is one, and otherwise
@@ -215,12 +220,6 @@ func cipherTypeFor(
 //
 // Failing at every step is not an error: the message is already queued in the
 // database, so the device receives it on its next connect.
-//
-// The return value drives whether the queued delivery row can be retired. A
-// message delivered live but left pending is redelivered on the next connect,
-// and a Double Ratchet message cannot be decrypted twice: the message key is
-// destroyed on first use, so the replay fails its MAC check. From the outside
-// that looks like the conversation breaking after a reconnect.
 func (r *Router) deliverToDevice(ctx context.Context, key ws.ClientKey, env *ws.Envelope) bool {
 	if r.hub.IsLocal(key) {
 		if r.hub.Deliver(ws.Delivery{Key: key, Envelope: env}) {
@@ -247,9 +246,7 @@ func (r *Router) deliverToDevice(ctx context.Context, key ws.ClientKey, env *ws.
 		return false
 	}
 
-	// Published to the owning node. Treated as delivered: that node hands it to
-	// a live socket, and keeping the row pending would replay the message on
-	// the next reconnect.
+	// Published to the owning node, which hands it to the live socket.
 	return true
 }
 
@@ -291,79 +288,90 @@ func (r *Router) RunBrokerLoop(ctx context.Context) {
 
 // FlushOffline pushes a device's queued mail on connect.
 //
-// The queue is drained before live traffic is routed to the socket, so a
-// reconnecting client sees its backlog in order rather than interleaved with
-// new messages arriving mid-drain.
+// The whole backlog is drained, page by page, with backpressure: each frame
+// waits for room in the socket's send buffer rather than tripping the
+// slow-consumer cutoff. Rows stay pending until the device acknowledges them,
+// so a connection that dies mid-flush loses nothing.
 func (r *Router) FlushOffline(ctx context.Context, key ws.ClientKey) (int, error) {
-	pending, err := r.store.PendingDeliveries(ctx, key.UserID, key.DeviceID, maxFlushBatch)
-	if err != nil {
-		return 0, fmt.Errorf("read pending deliveries: %w", err)
-	}
-	if len(pending) == 0 {
-		return 0, nil
-	}
+	var (
+		after uint64
+		sent  int
+	)
+	for {
+		pending, err := r.store.PendingDeliveriesAfter(ctx, key.UserID, key.DeviceID, after, flushPageSize)
+		if err != nil {
+			return sent, fmt.Errorf("read pending deliveries: %w", err)
+		}
+		if len(pending) == 0 {
+			break
+		}
+		after = pending[len(pending)-1].ID
 
-	ids := make([]uuid.UUID, 0, len(pending))
-	for _, d := range pending {
-		ids = append(ids, d.MessageID)
-	}
-	messages, err := r.store.MessagesByIDs(ctx, ids)
-	if err != nil {
-		return 0, fmt.Errorf("load queued messages: %w", err)
-	}
-
-	delivered := make([]uint64, 0, len(pending))
-	for _, d := range pending {
-		msg, ok := messages[d.MessageID]
-		if !ok {
-			continue // message expired or was purged
+		ids := make([]uuid.UUID, 0, len(pending))
+		for _, d := range pending {
+			ids = append(ids, d.MessageID)
+		}
+		messages, err := r.store.MessagesByIDs(ctx, ids)
+		if err != nil {
+			return sent, fmt.Errorf("load queued messages: %w", err)
 		}
 
-		// Per-device ciphertext wins for 1:1; group messages share the
-		// sender-key ciphertext stored on the message row.
-		ciphertext := d.Ciphertext
-		if len(ciphertext) == 0 {
-			ciphertext = msg.Ciphertext
+		for _, d := range pending {
+			msg, ok := messages[d.MessageID]
+			if !ok {
+				continue // message expired or was purged
+			}
+
+			// Per-device ciphertext wins for 1:1; group messages share the
+			// sender-key ciphertext stored on the message row.
+			ciphertext := d.Ciphertext
+			if len(ciphertext) == 0 {
+				ciphertext = msg.Ciphertext
+			}
+
+			env := &ws.Envelope{
+				Version:     1,
+				Type:        ws.TypeMessage,
+				ID:          msg.WireID(),
+				ChatID:      msg.ChatID,
+				Sender:      &ws.Address{UserID: msg.SenderID, DeviceID: msg.SenderDevID},
+				Recipient:   &ws.Address{UserID: key.UserID, DeviceID: key.DeviceID},
+				CipherType:  msg.CipherType,
+				Ciphertext:  ciphertext,
+				ContentHint: msg.ContentHint,
+				Timestamp:   msg.CreatedAt.UnixMilli(),
+				Seq:         msg.Seq,
+			}
+
+			if !r.hub.DeliverWait(ctx, ws.Delivery{Key: key, Envelope: env}) {
+				// Disconnected or out of time; the rest stays queued for the
+				// next connect.
+				r.log.Info("offline flush interrupted",
+					"user_id", key.UserID, "device_id", key.DeviceID, "sent", sent)
+				return sent, nil
+			}
+			sent++
 		}
 
-		env := &ws.Envelope{
-			Version:     1,
-			Type:        ws.TypeMessage,
-			ID:          msg.ID.String(),
-			ChatID:      msg.ChatID,
-			Sender:      &ws.Address{UserID: msg.SenderID, DeviceID: msg.SenderDevID},
-			Recipient:   &ws.Address{UserID: key.UserID, DeviceID: key.DeviceID},
-			CipherType:  msg.CipherType,
-			Ciphertext:  ciphertext,
-			ContentHint: msg.ContentHint,
-			Timestamp:   msg.CreatedAt.UnixMilli(),
-			Seq:         msg.Seq,
+		if len(pending) < flushPageSize {
+			break
 		}
-
-		if !r.hub.Deliver(ws.Delivery{Key: key, Envelope: env}) {
-			break // socket is saturated; the rest stays pending
-		}
-		delivered = append(delivered, d.ID)
-	}
-
-	if err := r.store.MarkDelivered(ctx, delivered); err != nil {
-		return len(delivered), fmt.Errorf("mark delivered: %w", err)
 	}
 
 	r.log.Info("offline queue flushed",
-		"user_id", key.UserID, "device_id", key.DeviceID, "count", len(delivered))
+		"user_id", key.UserID, "device_id", key.DeviceID, "count", sent)
 
 	// Tell the client the backlog is done, so it can distinguish history from
 	// live traffic.
-	r.hub.Deliver(ws.Delivery{
+	r.hub.DeliverWait(ctx, ws.Delivery{
 		Key: key,
 		Envelope: &ws.Envelope{
 			Version:   1,
 			Type:      ws.TypeSyncDone,
 			Timestamp: time.Now().UnixMilli(),
-			Seq:       int64(len(delivered)),
+			Seq:       int64(sent),
 		},
 	})
 
-	return len(delivered), nil
+	return sent, nil
 }

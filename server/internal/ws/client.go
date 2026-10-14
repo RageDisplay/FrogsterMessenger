@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"sync"
@@ -77,6 +78,10 @@ func NewDetachedClient(key ClientKey, log *slog.Logger) *Client {
 	}
 }
 
+// Outbox exposes the frames queued for this client, for tests in other
+// packages that drive a client built with NewDetachedClient.
+func (c *Client) Outbox() <-chan []byte { return c.send }
+
 // Key returns the client's identity.
 func (c *Client) Key() ClientKey { return c.key }
 
@@ -101,12 +106,36 @@ func (c *Client) Start() {
 // bound (which is a memory-exhaustion vector), the connection is closed and
 // the client reconnects, draining anything it missed from the offline queue.
 func (c *Client) enqueue(payload []byte) {
+	// The hub may close the send channel concurrently; sending on it then
+	// panics, and the frame has nowhere to go anyway.
+	defer func() { _ = recover() }()
 	select {
 	case c.send <- payload:
 	default:
 		c.log.Warn("client send buffer full, closing connection",
 			"user_id", c.key.UserID, "device_id", c.key.DeviceID)
 		c.closeSend()
+	}
+}
+
+// enqueueWait queues a frame, blocking until there is room, the connection
+// closes, or ctx ends.
+//
+// The send channel can be closed by the hub goroutine while this waits; a
+// send on a closed channel panics, which here simply means "connection gone".
+func (c *Client) enqueueWait(ctx context.Context, payload []byte) (ok bool) {
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	select {
+	case c.send <- payload:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-c.closed:
+		return false
 	}
 }
 

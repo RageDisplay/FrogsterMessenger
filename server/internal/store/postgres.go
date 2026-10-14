@@ -66,8 +66,18 @@ func (s *Store) Close() error {
 	return sqlDB.Close()
 }
 
-// Migrate applies every embedded SQL migration in lexical order. Each file is
-// expected to be idempotent (IF NOT EXISTS), so re-running is safe.
+// migrationLockID is the advisory lock key serialising migrations, so two
+// instances starting together cannot apply the same file twice.
+const migrationLockID = 0x46524F47 // "FROG"
+
+// Migrate applies the embedded SQL migrations that have not run yet, in
+// lexical order, recording each in schema_migrations.
+//
+// Everything runs in one transaction under an advisory lock: PostgreSQL DDL is
+// transactional, so a failing file leaves the schema exactly as it was rather
+// than half-migrated. The files are still written idempotently (IF NOT
+// EXISTS), because databases created before schema_migrations existed run
+// 0001 and 0002 once more on the first upgrade.
 func (s *Store) Migrate(ctx context.Context) error {
 	entries, err := migrationFS.ReadDir("migrations")
 	if err != nil {
@@ -82,15 +92,51 @@ func (s *Store) Migrate(ctx context.Context) error {
 	}
 	sort.Strings(names)
 
-	for _, name := range names {
-		body, err := migrationFS.ReadFile("migrations/" + name)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", name, err)
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", migrationLockID).Error; err != nil {
+			return fmt.Errorf("lock migrations: %w", err)
 		}
-		if err := s.db.WithContext(ctx).Exec(string(body)).Error; err != nil {
-			return fmt.Errorf("apply %s: %w", name, err)
+		if err := tx.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+			name       TEXT PRIMARY KEY,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`).Error; err != nil {
+			return fmt.Errorf("create schema_migrations: %w", err)
 		}
-		s.log.Info("migration applied", "file", name)
+
+		var applied []string
+		if err := tx.Raw("SELECT name FROM schema_migrations").Scan(&applied).Error; err != nil {
+			return fmt.Errorf("read schema_migrations: %w", err)
+		}
+		done := make(map[string]bool, len(applied))
+		for _, n := range applied {
+			done[n] = true
+		}
+
+		for _, name := range names {
+			if done[name] {
+				continue
+			}
+			body, err := migrationFS.ReadFile("migrations/" + name)
+			if err != nil {
+				return fmt.Errorf("read %s: %w", name, err)
+			}
+			if err := tx.Exec(string(body)).Error; err != nil {
+				return fmt.Errorf("apply %s: %w", name, err)
+			}
+			if err := tx.Exec("INSERT INTO schema_migrations (name) VALUES (?)", name).Error; err != nil {
+				return fmt.Errorf("record %s: %w", name, err)
+			}
+			s.log.Info("migration applied", "file", name)
+		}
+		return nil
+	})
+}
+
+// Ping checks that the database answers, for readiness probes.
+func (s *Store) Ping(ctx context.Context) error {
+	sqlDB, err := s.db.DB()
+	if err != nil {
+		return err
 	}
-	return nil
+	return sqlDB.PingContext(ctx)
 }

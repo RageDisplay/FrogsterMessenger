@@ -105,6 +105,13 @@ func (s *Store) ActiveSignedPreKey(ctx context.Context, deviceID uuid.UUID) (*mo
 // active prekeys.
 func (s *Store) ReplaceSignedPreKey(ctx context.Context, deviceID uuid.UUID, spk *models.SignedPreKey) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Only the active key is ever served, so retired ones are dropped
+		// rather than accumulated. A reused key id (the client's counter
+		// wrapped) replaces the old row instead of violating uniqueness.
+		if err := tx.Where("device_id = ? AND (NOT active OR key_id = ?)", deviceID, spk.KeyID).
+			Delete(&models.SignedPreKey{}).Error; err != nil {
+			return fmt.Errorf("drop retired signed prekeys: %w", err)
+		}
 		if err := tx.Model(&models.SignedPreKey{}).
 			Where("device_id = ?", deviceID).
 			Update("active", false).Error; err != nil {

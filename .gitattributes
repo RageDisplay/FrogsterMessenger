@@ -1,0 +1,5 @@
+# Shell scripts and container configs run on Linux; CRLF breaks them.
+*.sh text eol=lf
+deploy/Caddyfile.tmpl text eol=lf
+*.yml text eol=lf
+Dockerfile text eol=lf
