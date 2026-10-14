@@ -108,6 +108,7 @@ class EncryptedPayload {
     this.initiatorIdentityKey,
     this.initiatorEphemeralKey,
     this.oneTimePreKeyId,
+    this.signedPreKeyId,
   });
 
   final int cipherType;
@@ -117,6 +118,11 @@ class EncryptedPayload {
   final Uint8List? initiatorIdentityKey;
   final Uint8List? initiatorEphemeralKey;
   final int? oneTimePreKeyId;
+
+  /// Which of the responder's signed prekeys the handshake used. Absent in
+  /// messages from clients that predate signed prekey rotation, which always
+  /// used the current one.
+  final int? signedPreKeyId;
 
   bool get isPreKeyMessage => cipherType == cipherTypePreKey;
 
@@ -128,6 +134,7 @@ class EncryptedPayload {
         if (initiatorEphemeralKey != null)
           'ek': base64Encode(initiatorEphemeralKey!),
         if (oneTimePreKeyId != null) 'otp': oneTimePreKeyId,
+        if (signedPreKeyId != null) 'spk': signedPreKeyId,
       };
 
   static EncryptedPayload fromJson(Map<String, dynamic> json) =>
@@ -141,8 +148,42 @@ class EncryptedPayload {
             ? null
             : base64Decode(json['ek'] as String),
         oneTimePreKeyId: json['otp'] as int?,
+        signedPreKeyId: json['spk'] as int?,
       );
 }
+
+/// A new signed prekey's public half, ready to upload.
+class SignedPreKeyUpload {
+  const SignedPreKeyUpload({
+    required this.keyId,
+    required this.publicKey,
+    required this.signature,
+    required this.pending,
+  });
+
+  final int keyId;
+
+  /// DJB-prefixed public key.
+  final Uint8List publicKey;
+  final Uint8List signature;
+
+  /// The full pair, committed with [CryptoEngine.commitSignedPreKeyRotation]
+  /// once the server has accepted the upload.
+  final SignedPreKeyPair pending;
+
+  Map<String, dynamic> toJson() => {
+        'key_id': keyId,
+        'public_key': base64Encode(publicKey),
+        'signature': base64Encode(signature),
+      };
+}
+
+/// How long a signed prekey is published before it is replaced.
+///
+/// The private half of a signed prekey can decrypt the first messages of
+/// every session built on it, so it bounds how far back a device compromise
+/// reaches. Signal rotates on a similar schedule.
+const Duration signedPreKeyMaxAge = Duration(days: 7);
 
 /// Raised when a peer's identity key differs from the pinned one and the
 /// engine is running in [TrustPolicy.strict].
@@ -209,6 +250,20 @@ abstract class CryptoEngine {
   /// Generates additional one-time prekeys when the server's pool runs low.
   Future<Map<int, Uint8List>> generateOneTimePreKeys(int count);
 
+  /// Returns a replacement signed prekey when the current one is older than
+  /// [maxAge], or null when no rotation is due.
+  ///
+  /// Two-phase on purpose: nothing changes locally until
+  /// [commitSignedPreKeyRotation] runs after a successful upload, so a failed
+  /// upload never leaves the server publishing a key this device has dropped.
+  Future<SignedPreKeyUpload?> prepareSignedPreKeyRotation({
+    Duration maxAge = signedPreKeyMaxAge,
+  });
+
+  /// Installs a rotated signed prekey, keeping the previous one so prekey
+  /// messages built against it still decrypt.
+  Future<void> commitSignedPreKeyRotation(SignedPreKeyUpload upload);
+
   /// Establishes a session with a peer from their published bundle.
   ///
   /// Used by whoever speaks first. The peer completes the handshake with
@@ -225,6 +280,7 @@ abstract class CryptoEngine {
     required Uint8List initiatorIdentityKey,
     required Uint8List initiatorEphemeralKey,
     int? oneTimePreKeyId,
+    int? signedPreKeyId,
   });
 
   /// True when a session with this peer already exists.
@@ -260,16 +316,19 @@ class _PendingHandshake {
     required this.identityKey,
     required this.ephemeralKey,
     required this.oneTimePreKeyId,
+    required this.signedPreKeyId,
   });
 
   final Uint8List identityKey;
   final Uint8List ephemeralKey;
   final int? oneTimePreKeyId;
+  final int? signedPreKeyId;
 
   Map<String, dynamic> toJson() => {
         'ik': base64Encode(identityKey),
         'ek': base64Encode(ephemeralKey),
         if (oneTimePreKeyId != null) 'otp': oneTimePreKeyId,
+        if (signedPreKeyId != null) 'spk': signedPreKeyId,
       };
 
   static _PendingHandshake fromJson(Map<String, dynamic> json) =>
@@ -277,7 +336,21 @@ class _PendingHandshake {
         identityKey: base64Decode(json['ik'] as String),
         ephemeralKey: base64Decode(json['ek'] as String),
         oneTimePreKeyId: json['otp'] as int?,
+        signedPreKeyId: json['spk'] as int?,
       );
+}
+
+/// A responder session built from a prekey message but not yet installed.
+class _InboundCandidate {
+  const _InboundCandidate({
+    required this.session,
+    required this.initiatorIdentityKey,
+    required this.oneTimePreKeyId,
+  });
+
+  final RatchetSession session;
+  final Uint8List initiatorIdentityKey;
+  final int? oneTimePreKeyId;
 }
 
 /// Where ratchet sessions and pinned identities are persisted.
@@ -333,6 +406,26 @@ class FrogsterCryptoEngine implements CryptoEngine {
 
   IdentityKeys? _identity;
 
+  /// Tail of the operation queue for each peer.
+  ///
+  /// Every operation that reads and writes a peer's session runs through
+  /// [_serialized]. The ratchet awaits between reading a chain key and storing
+  /// its successor, so two overlapping calls on one session -- two frames
+  /// arriving together, or a send racing a receive -- would derive the same
+  /// message key twice or lose an advance, and the conversation would fail
+  /// with MAC errors from then on.
+  final Map<String, Future<void>> _queues = {};
+
+  Future<T> _serialized<T>(String peerKey, Future<T> Function() body) {
+    final previous = _queues[peerKey] ?? Future<void>.value();
+    final done = Completer<void>();
+    _queues[peerKey] = done.future;
+    return previous.then((_) => body()).whenComplete(() {
+      done.complete();
+      if (identical(_queues[peerKey], done.future)) _queues.remove(peerKey);
+    });
+  }
+
   @override
   Future<PublicKeyBundle> initializeIdentity({
     int oneTimePreKeyCount = 100,
@@ -351,12 +444,7 @@ class FrogsterCryptoEngine implements CryptoEngine {
 
     var spk = await _keys.loadSignedPreKey();
     if (spk == null) {
-      final pair = await generateKeyPair();
-      final signature = await sign(
-        seed: identity.signingKeyPair.seed,
-        message: pair.publicKey,
-      );
-      spk = SignedPreKeyPair(keyId: 1, keyPair: pair, signature: signature);
+      spk = await _newSignedPreKey(identity, keyId: 1);
       await _keys.saveSignedPreKey(spk);
     }
 
@@ -375,73 +463,136 @@ class FrogsterCryptoEngine implements CryptoEngine {
 
   @override
   Future<Map<int, Uint8List>> generateOneTimePreKeys(int count) async {
-    final out = <int, Uint8List>{};
-    // Key ids are derived from a random base so that regenerating a pool does
-    // not collide with ids the server still holds.
-    final base = _random.nextInt(0xFFFF);
+    // Ids come from a persisted counter. The first value is random so that a
+    // reinstall, which loses the counter, is unlikely to land on ids the
+    // server still holds for this device.
+    var next = await _keys.loadNextOneTimePreKeyId() ??
+        _random.nextInt(_maxPreKeyId ~/ 2) + 1;
+    if (next + count > _maxPreKeyId) next = 1;
 
+    final out = <int, Uint8List>{};
     for (var i = 0; i < count; i++) {
-      final keyId = base + i + 1;
+      final keyId = next + i;
       final pair = await generateKeyPair();
       await _keys.saveOneTimePreKey(keyId, pair);
       out[keyId] = pair.serializedPublicKey;
     }
+    await _keys.saveNextOneTimePreKeyId(next + count);
     return out;
+  }
+
+  /// Key ids travel as uint32 on the server.
+  static const int _maxPreKeyId = 0x7FFFFFFF;
+
+  @override
+  Future<SignedPreKeyUpload?> prepareSignedPreKeyRotation({
+    Duration maxAge = signedPreKeyMaxAge,
+  }) async {
+    final identity = await _requireIdentity();
+    final current = await _keys.loadSignedPreKey();
+    if (current != null) {
+      final createdAt = current.createdAt;
+      if (createdAt != null && DateTime.now().difference(createdAt) < maxAge) {
+        return null;
+      }
+    }
+
+    final nextId = current == null || current.keyId >= _maxPreKeyId
+        ? 1
+        : current.keyId + 1;
+    final pending = await _newSignedPreKey(identity, keyId: nextId);
+    return SignedPreKeyUpload(
+      keyId: pending.keyId,
+      publicKey: _serialize(pending.keyPair.publicKey),
+      signature: pending.signature,
+      pending: pending,
+    );
+  }
+
+  @override
+  Future<void> commitSignedPreKeyRotation(SignedPreKeyUpload upload) async {
+    final current = await _keys.loadSignedPreKey();
+    // Only one previous key is kept: anything older has had a full rotation
+    // period to be used, and holding it longer weakens forward secrecy.
+    await _keys.savePreviousSignedPreKey(current);
+    await _keys.saveSignedPreKey(upload.pending);
+  }
+
+  Future<SignedPreKeyPair> _newSignedPreKey(
+    IdentityKeys identity, {
+    required int keyId,
+  }) async {
+    final pair = await generateKeyPair();
+    final signature = await sign(
+      seed: identity.signingKeyPair.seed,
+      message: pair.publicKey,
+    );
+    return SignedPreKeyPair(
+      keyId: keyId,
+      keyPair: pair,
+      signature: signature,
+      createdAt: DateTime.now(),
+    );
   }
 
   @override
   Future<void> establishOutboundSession(
     PeerAddress peer,
     PreKeyBundle bundle,
-  ) async {
-    final identity = await _requireIdentity();
+  ) =>
+      _serialized(peer.key, () async {
+        final identity = await _requireIdentity();
 
-    // Trust on first use: pin the peer's identity, and decide what a change
-    // means according to the configured policy.
-    final pinned = await _sessions.loadPinnedIdentity(peer.key);
-    final decision =
-        evaluateTrust(pinned: pinned, presentedKey: bundle.identityKey);
+        // Verify the bundle before trusting anything in it: x3dhInitiate
+        // checks the signed prekey signature and throws on a bad one, and a
+        // rejected bundle must not get its identity key pinned or replace a
+        // working session.
+        final result = await x3dhInitiate(identity: identity, bundle: bundle);
 
-    switch (decision) {
-      case TrustDecision.changed:
-        await _handleIdentityChange(
-          peer: peer,
-          pinned: pinned!,
-          presentedKey: bundle.identityKey,
+        // Trust on first use: pin the peer's identity, and decide what a
+        // change means according to the configured policy.
+        final pinned = await _sessions.loadPinnedIdentity(peer.key);
+        final decision =
+            evaluateTrust(pinned: pinned, presentedKey: bundle.identityKey);
+
+        switch (decision) {
+          case TrustDecision.changed:
+            await _handleIdentityChange(
+              peer: peer,
+              pinned: pinned!,
+              presentedKey: bundle.identityKey,
+            );
+          case TrustDecision.firstUse:
+            await _sessions.savePinnedIdentity(PinnedIdentity(
+              userId: peer.userId,
+              deviceId: peer.deviceId,
+              identityKey: bundle.identityKey,
+              pinnedAt: DateTime.now(),
+            ));
+          case TrustDecision.matched:
+            break;
+        }
+
+        final session = await RatchetSession.initSender(
+          sharedSecret: result.sharedSecret,
+          receiverSignedPreKey: bundle.signedPreKey,
+          associatedData: result.associatedData,
         );
-      case TrustDecision.firstUse:
-        await _sessions.savePinnedIdentity(PinnedIdentity(
-          userId: peer.userId,
-          deviceId: peer.deviceId,
-          identityKey: bundle.identityKey,
-          pinnedAt: DateTime.now(),
-        ));
-      case TrustDecision.matched:
-        break;
-    }
 
-    // x3dhInitiate verifies the signed prekey signature and throws if it does
-    // not check out.
-    final result = await x3dhInitiate(identity: identity, bundle: bundle);
+        _live[peer.key] = session;
 
-    final session = await RatchetSession.initSender(
-      sharedSecret: result.sharedSecret,
-      receiverSignedPreKey: bundle.signedPreKey,
-      associatedData: result.associatedData,
-    );
+        // Held until the peer replies, because every message until then must
+        // carry the material they need to complete their half of the
+        // handshake.
+        _pendingHandshake[peer.key] = _PendingHandshake(
+          identityKey: identity.dhKeyPair.publicKey,
+          ephemeralKey: result.ephemeralPublicKey,
+          oneTimePreKeyId: result.usedOneTimePreKeyId,
+          signedPreKeyId: bundle.signedPreKeyId,
+        );
 
-    _live[peer.key] = session;
-
-    // Held until the peer replies, because every message until then must carry
-    // the material they need to complete their half of the handshake.
-    _pendingHandshake[peer.key] = _PendingHandshake(
-      identityKey: identity.dhKeyPair.publicKey,
-      ephemeralKey: result.ephemeralPublicKey,
-      oneTimePreKeyId: result.usedOneTimePreKeyId,
-    );
-
-    await _persist(peer.key, session);
-  }
+        await _persist(peer.key, session);
+      });
 
   @override
   Future<void> establishInboundSession({
@@ -449,19 +600,47 @@ class FrogsterCryptoEngine implements CryptoEngine {
     required Uint8List initiatorIdentityKey,
     required Uint8List initiatorEphemeralKey,
     int? oneTimePreKeyId,
+    int? signedPreKeyId,
+  }) =>
+      _serialized(peer.key, () async {
+        final candidate = await _buildInboundSession(
+          initiatorIdentityKey: initiatorIdentityKey,
+          initiatorEphemeralKey: initiatorEphemeralKey,
+          oneTimePreKeyId: oneTimePreKeyId,
+          signedPreKeyId: signedPreKeyId,
+        );
+        await _commitInboundSession(peer, candidate);
+      });
+
+  /// Runs the responder half of X3DH without changing any stored state.
+  ///
+  /// Nothing in a prekey message is authenticated until its ratchet message
+  /// decrypts under the session derived from it. Pinning the claimed
+  /// identity, replacing the existing session or burning a one-time prekey
+  /// before that point would let anyone who can inject a frame -- the server
+  /// included -- fake an identity change or break a working conversation.
+  Future<_InboundCandidate> _buildInboundSession({
+    required Uint8List initiatorIdentityKey,
+    required Uint8List initiatorEphemeralKey,
+    required int? oneTimePreKeyId,
+    required int? signedPreKeyId,
   }) async {
     final identity = await _requireIdentity();
 
-    final spk = await _keys.loadSignedPreKey();
-    if (spk == null) {
-      throw StateError('no signed prekey; identity not initialised');
-    }
+    final spk = await _signedPreKeyFor(signedPreKeyId);
 
-    // The one-time prekey the initiator consumed, if any. Its absence is
-    // legitimate: the server's pool may have been empty.
+    // The one-time prekey the initiator consumed, if any. Its absence from
+    // the message is legitimate: the server's pool may have been empty. Its
+    // absence from storage is not -- the key was already used, so the derived
+    // secret could never match.
     KeyPair? oneTime;
     if (oneTimePreKeyId != null) {
       oneTime = await _keys.loadOneTimePreKey(oneTimePreKeyId);
+      if (oneTime == null) {
+        throw RatchetException(
+          'one-time prekey $oneTimePreKeyId is unknown or already used',
+        );
+      }
     }
 
     final result = await x3dhRespond(
@@ -472,48 +651,75 @@ class FrogsterCryptoEngine implements CryptoEngine {
       oneTimePreKeyPair: oneTime,
     );
 
-    // Pin the initiator's identity on first contact, as the outbound path does.
-    final pinned = await _sessions.loadPinnedIdentity(peer.key);
-    if (pinned == null) {
-      await _sessions.savePinnedIdentity(PinnedIdentity(
-        userId: peer.userId,
-        deviceId: peer.deviceId,
-        identityKey: initiatorIdentityKey,
-        pinnedAt: DateTime.now(),
-      ));
-    } else if (!constantTimeEquals(pinned.identityKey, initiatorIdentityKey)) {
-      await _handleIdentityChange(
-        peer: peer,
-        pinned: pinned,
-        presentedKey: initiatorIdentityKey,
-        // The session is being built from this very message, so dropping
-        // state here would discard the session we are about to install.
-        dropSession: false,
-      );
-    }
-
     final session = await RatchetSession.initReceiver(
       sharedSecret: result.sharedSecret,
       signedPreKeyPair: spk.keyPair,
       associatedData: result.associatedData,
     );
+    return _InboundCandidate(
+      session: session,
+      initiatorIdentityKey: initiatorIdentityKey,
+      oneTimePreKeyId: oneTimePreKeyId,
+    );
+  }
 
-    _live[peer.key] = session;
+  Future<SignedPreKeyPair> _signedPreKeyFor(int? keyId) async {
+    final current = await _keys.loadSignedPreKey();
+    if (current == null) {
+      throw StateError('no signed prekey; identity not initialised');
+    }
+    if (keyId == null || keyId == current.keyId) return current;
+
+    final previous = await _keys.loadPreviousSignedPreKey();
+    if (previous != null && previous.keyId == keyId) return previous;
+    throw RatchetException('signed prekey $keyId is no longer available');
+  }
+
+  /// Pins the initiator, installs the session and destroys the one-time
+  /// prekey. Runs only once the candidate has proven itself.
+  Future<void> _commitInboundSession(
+    PeerAddress peer,
+    _InboundCandidate candidate,
+  ) async {
+    final pinned = await _sessions.loadPinnedIdentity(peer.key);
+    if (pinned == null) {
+      await _sessions.savePinnedIdentity(PinnedIdentity(
+        userId: peer.userId,
+        deviceId: peer.deviceId,
+        identityKey: candidate.initiatorIdentityKey,
+        pinnedAt: DateTime.now(),
+      ));
+    } else if (!constantTimeEquals(
+      pinned.identityKey,
+      candidate.initiatorIdentityKey,
+    )) {
+      await _handleIdentityChange(
+        peer: peer,
+        pinned: pinned,
+        presentedKey: candidate.initiatorIdentityKey,
+        // The candidate replaces the session below; dropping state here
+        // would only race with that.
+        dropSession: false,
+      );
+    }
+
+    _live[peer.key] = candidate.session;
 
     // Answering a handshake settles the session, so nothing stays pending: we
     // are the responder here, not the initiator.
     _pendingHandshake.remove(peer.key);
-    await _persist(peer.key, session);
+    await _persist(peer.key, candidate.session);
 
     // The one-time prekey is single use: destroying the private half is what
     // makes it contribute forward secrecy.
-    if (oneTimePreKeyId != null) {
-      await _keys.deleteOneTimePreKey(oneTimePreKeyId);
-    }
+    final otp = candidate.oneTimePreKeyId;
+    if (otp != null) await _keys.deleteOneTimePreKey(otp);
   }
 
   @override
-  Future<bool> hasSession(PeerAddress peer) async {
+  Future<bool> hasSession(PeerAddress peer) => _hasSession(peer);
+
+  Future<bool> _hasSession(PeerAddress peer) async {
     if (_live.containsKey(peer.key)) return true;
     return await _sessions.loadSession(peer.key) != null;
   }
@@ -522,46 +728,40 @@ class FrogsterCryptoEngine implements CryptoEngine {
   Future<EncryptedPayload> encrypt(
     PeerAddress peer,
     List<int> plaintext,
-  ) async {
-    final session = await _session(peer);
-    final message = await session.encrypt(plaintext);
-    await _persist(peer.key, session);
+  ) =>
+      _serialized(peer.key, () async {
+        final session = await _session(peer);
+        final message = await session.encrypt(plaintext);
+        await _persist(peer.key, session);
 
-    final pending = _pendingHandshake[peer.key];
-    if (pending != null) {
-      return EncryptedPayload(
-        cipherType: cipherTypePreKey,
-        body: message.serialize(),
-        initiatorIdentityKey: pending.identityKey,
-        initiatorEphemeralKey: pending.ephemeralKey,
-        oneTimePreKeyId: pending.oneTimePreKeyId,
-      );
-    }
+        final pending = _pendingHandshake[peer.key];
+        if (pending != null) {
+          return EncryptedPayload(
+            cipherType: cipherTypePreKey,
+            body: message.serialize(),
+            initiatorIdentityKey: pending.identityKey,
+            initiatorEphemeralKey: pending.ephemeralKey,
+            oneTimePreKeyId: pending.oneTimePreKeyId,
+            signedPreKeyId: pending.signedPreKeyId,
+          );
+        }
 
-    return EncryptedPayload(
-      cipherType: cipherTypeWhisper,
-      body: message.serialize(),
-    );
-  }
+        return EncryptedPayload(
+          cipherType: cipherTypeWhisper,
+          body: message.serialize(),
+        );
+      });
 
   @override
   Future<Uint8List> decrypt(
     PeerAddress peer,
     EncryptedPayload payload,
-  ) async {
-    // A prekey message always builds the session it describes, even when one
-    // already exists.
-    //
-    // Both people can open a conversation before either's first message
-    // arrives -- each taps "new chat", each runs establishOutboundSession, and
-    // now two unrelated sessions exist for the same pair. Skipping the
-    // handshake because "a session is already there" would decrypt the peer's
-    // prekey message with our own outbound session, whose keys are different,
-    // and every message would fail its MAC check with nothing to indicate why.
-    //
-    // A prekey message is self-contained by design: it carries the identity
-    // and ephemeral keys needed to derive the session from scratch, so acting
-    // on it is always safe.
+  ) =>
+      _serialized(peer.key, () => _decrypt(peer, payload));
+
+  Future<Uint8List> _decrypt(PeerAddress peer, EncryptedPayload payload) async {
+    final message = RatchetMessage.deserialize(payload.body);
+
     if (payload.isPreKeyMessage) {
       final identityKey = payload.initiatorIdentityKey;
       final ephemeralKey = payload.initiatorEphemeralKey;
@@ -571,26 +771,42 @@ class FrogsterCryptoEngine implements CryptoEngine {
         );
       }
 
-      // Rebuilding on every prekey message would reset the ratchet mid-
-      // conversation, because the initiator keeps attaching the material until
-      // they hear back. Only build when we cannot already decrypt.
-      final needsSession = !await hasSession(peer) ||
-          !await _canDecryptWithExistingSession(peer, payload);
-
-      if (needsSession) {
-        await establishInboundSession(
-          peer: peer,
-          initiatorIdentityKey: identityKey,
-          initiatorEphemeralKey: ephemeralKey,
-          oneTimePreKeyId: payload.oneTimePreKeyId,
-        );
+      // The initiator keeps attaching handshake material until it hears back,
+      // so most prekey messages belong to the session we already have.
+      // RatchetSession.decrypt is transactional, so trying it costs nothing
+      // when it fails.
+      if (await _hasSession(peer)) {
+        final existing = await _session(peer);
+        try {
+          final plaintext = await existing.decrypt(message);
+          await _afterDecrypt(peer, existing);
+          return plaintext;
+        } on RatchetException {
+          // A genuinely new handshake: both people may have opened the chat
+          // before either's first message arrived, or the peer reinstalled.
+          // Decrypting it with our own session would fail every time, so the
+          // message builds the session it describes instead.
+        }
       }
+
+      final candidate = await _buildInboundSession(
+        initiatorIdentityKey: identityKey,
+        initiatorEphemeralKey: ephemeralKey,
+        oneTimePreKeyId: payload.oneTimePreKeyId,
+        signedPreKeyId: payload.signedPreKeyId,
+      );
+      final plaintext = await candidate.session.decrypt(message);
+      await _commitInboundSession(peer, candidate);
+      return plaintext;
     }
 
     final session = await _session(peer);
-    final message = RatchetMessage.deserialize(payload.body);
     final plaintext = await session.decrypt(message);
+    await _afterDecrypt(peer, session);
+    return plaintext;
+  }
 
+  Future<void> _afterDecrypt(PeerAddress peer, RatchetSession session) async {
     // Hearing from the peer proves they completed the handshake, so the
     // material no longer needs to ride along. Dropped before persisting, or
     // the stored copy would outlive it and keep tagging messages as prekey
@@ -600,8 +816,6 @@ class FrogsterCryptoEngine implements CryptoEngine {
     // Persist immediately: the chain has advanced and skipped keys may have
     // changed. Losing that would make later messages undecryptable.
     await _persist(peer.key, session);
-
-    return plaintext;
   }
 
   @override
@@ -625,23 +839,24 @@ class FrogsterCryptoEngine implements CryptoEngine {
       _sessions.loadPinnedIdentity(peer.key);
 
   @override
-  Future<void> acceptIdentityChange(PeerAddress peer) async {
-    final pinned = await _sessions.loadPinnedIdentity(peer.key);
-    if (pinned == null) return;
+  Future<void> acceptIdentityChange(PeerAddress peer) =>
+      _serialized(peer.key, () async {
+        final pinned = await _sessions.loadPinnedIdentity(peer.key);
+        if (pinned == null) return;
 
-    await _sessions.savePinnedIdentity(PinnedIdentity(
-      userId: pinned.userId,
-      deviceId: pinned.deviceId,
-      identityKey: pinned.identityKey,
-      pinnedAt: pinned.pinnedAt,
-      acceptedChange: true,
-    ));
+        await _sessions.savePinnedIdentity(PinnedIdentity(
+          userId: pinned.userId,
+          deviceId: pinned.deviceId,
+          identityKey: pinned.identityKey,
+          pinnedAt: pinned.pinnedAt,
+          acceptedChange: true,
+        ));
 
-    // The old session is bound to the previous identity, so it cannot be
-    // reused: drop it and let a fresh handshake run.
-    _live.remove(peer.key);
-    await _sessions.deleteSession(peer.key);
-  }
+        // The old session is bound to the previous identity, so it cannot be
+        // reused: drop it and let a fresh handshake run.
+        _live.remove(peer.key);
+        await _sessions.deleteSession(peer.key);
+      });
 
   /// Applies the trust policy to a peer whose identity key no longer matches
   /// what we pinned.
@@ -688,29 +903,6 @@ class FrogsterCryptoEngine implements CryptoEngine {
       previousKey: pinned.identityKey,
       newKey: presentedKey,
     ));
-  }
-
-  /// Reports whether the session we already hold can decrypt this payload.
-  ///
-  /// The attempt runs against a throwaway copy of the session state. A real
-  /// decrypt advances the ratchet and consumes skipped keys, so trying on the
-  /// live session and failing would corrupt it -- the peer's next message
-  /// would then fail too, turning a recoverable mismatch into a broken
-  /// conversation.
-  Future<bool> _canDecryptWithExistingSession(
-    PeerAddress peer,
-    EncryptedPayload payload,
-  ) async {
-    final stored = await _sessions.loadSession(peer.key);
-    if (stored == null) return false;
-
-    try {
-      final probe = await RatchetSession.fromJson(stored);
-      await probe.decrypt(RatchetMessage.deserialize(payload.body));
-      return true;
-    } catch (_) {
-      return false;
-    }
   }
 
   /// Loads a session, keeping exactly one live instance per peer.

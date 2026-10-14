@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newStore(t *testing.T) *FileBlobStore {
@@ -23,7 +24,7 @@ func newStore(t *testing.T) *FileBlobStore {
 func writeBlob(t *testing.T, store *FileBlobStore, data []byte) string {
 	t.Helper()
 
-	id, w, err := store.Create()
+	id, w, err := store.Create("owner-1")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -205,5 +206,51 @@ func TestDigestWriterMatchesSHA256(t *testing.T) {
 	}
 	if sink.String() != string(payload) {
 		t.Error("bytes were altered on their way to the underlying writer")
+	}
+}
+
+// TestSweepRemovesOnlyExpiredBlobs: expired blobs go, together with their
+// owner sidecar; fresh ones stay.
+func TestSweepRemovesOnlyExpiredBlobs(t *testing.T) {
+	t.Parallel()
+	store := newStore(t)
+
+	old := writeBlob(t, store, []byte("old ciphertext"))
+	fresh := writeBlob(t, store, []byte("fresh ciphertext"))
+
+	past := time.Now().Add(-40 * 24 * time.Hour)
+	if err := os.Chtimes(store.pathFor(old), past, past); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	n, err := store.Sweep(30 * 24 * time.Hour)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("swept %d blobs, want 1", n)
+	}
+	if _, _, err := store.Open(old); !errors.Is(err, ErrBlobNotFound) {
+		t.Errorf("expired blob still readable: %v", err)
+	}
+	if _, err := os.Stat(store.pathFor(old) + ownerSuffix); !os.IsNotExist(err) {
+		t.Errorf("owner sidecar of a swept blob left behind: %v", err)
+	}
+	if _, _, err := store.Open(fresh); err != nil {
+		t.Errorf("fresh blob was swept: %v", err)
+	}
+}
+
+func TestBlobRecordsOwner(t *testing.T) {
+	t.Parallel()
+	store := newStore(t)
+
+	id := writeBlob(t, store, []byte("x"))
+	owner, err := store.Owner(id)
+	if err != nil {
+		t.Fatalf("owner: %v", err)
+	}
+	if owner != "owner-1" {
+		t.Errorf("owner = %q, want owner-1", owner)
 	}
 }

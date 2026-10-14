@@ -97,6 +97,27 @@ func (h *Hub) Deliver(d Delivery) bool {
 	}
 }
 
+// DeliverWait hands a frame to a locally connected device, waiting for room in
+// its send buffer instead of dropping the connection when it is full.
+//
+// For bulk transfers such as the offline flush, which would otherwise outrun
+// the socket and trip the slow-consumer cutoff in enqueue. It reports false
+// when the device is not connected here, the connection closed, or ctx ended.
+func (h *Hub) DeliverWait(ctx context.Context, d Delivery) bool {
+	h.mu.RLock()
+	c, ok := h.clients[d.Key]
+	h.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	payload, err := json.Marshal(d.Envelope)
+	if err != nil {
+		h.log.Error("marshal envelope", "err", err)
+		return false
+	}
+	return c.enqueueWait(ctx, payload)
+}
+
 // add installs a client, displacing any previous connection for the same
 // device. A reconnect before the old socket's read deadline expires would
 // otherwise leave a stale entry that silently swallows messages.

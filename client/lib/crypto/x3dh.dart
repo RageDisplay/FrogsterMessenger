@@ -70,11 +70,16 @@ class SignedPreKeyPair {
     required this.keyId,
     required this.keyPair,
     required this.signature,
+    this.createdAt,
   });
 
   final int keyId;
   final KeyPair keyPair;
   final Uint8List signature;
+
+  /// When the key was generated; null for keys stored before rotation
+  /// existed, which are treated as due for rotation.
+  final DateTime? createdAt;
 }
 
 /// Result of running X3DH as the initiator.

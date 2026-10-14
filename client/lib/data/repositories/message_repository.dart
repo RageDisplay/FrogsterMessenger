@@ -64,7 +64,18 @@ class MessageRepository {
         _dao = dao,
         _resolver = resolver,
         _account = account {
-    _subscription = _ws.envelopes.listen(_onEnvelope);
+    // Frames are handled strictly one at a time, in arrival order. An async
+    // listener alone would start the next frame at the first await: an
+    // offline flush delivering a burst would then interleave the dedup check
+    // and the database writes of several messages, and ordering-sensitive
+    // frames (a message and its ack, a key change and the message after it)
+    // would race.
+    _subscription = _ws.envelopes
+        .asyncMap((envelope) => _onEnvelope(envelope).catchError(
+              // ignore: avoid_print
+              (Object e) => print('[frogster] dropping frame: $e'),
+            ))
+        .listen((_) {});
 
     // Key changes the engine handled on its own still have to reach the user:
     // an automatic re-handshake is exactly what a key-substitution attack also
@@ -83,7 +94,7 @@ class MessageRepository {
   final DeviceResolver _resolver;
   final Account _account;
 
-  late final StreamSubscription<Envelope> _subscription;
+  late final StreamSubscription<void> _subscription;
   late final StreamSubscription<IdentityChangeNotice> _identityChangeSub;
 
   /// The chat each peer device was last seen in, so a key change reported by

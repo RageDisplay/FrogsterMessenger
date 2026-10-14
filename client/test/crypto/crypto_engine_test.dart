@@ -39,7 +39,7 @@ class _Endpoint {
   }
 
   /// Builds the bundle a peer would fetch from the server for this device.
-  PreKeyBundle bundleForPeer() {
+  PreKeyBundle bundleForPeer({bool withOneTimePreKey = true}) {
     final otpEntry = published.oneTimePreKeys.entries.first;
     return PreKeyBundle(
       deviceId: deviceId,
@@ -49,8 +49,9 @@ class _Endpoint {
       signedPreKeyId: published.signedPreKeyId,
       signedPreKey: deserializePublicKey(published.signedPreKey),
       signedPreKeySignature: published.signedPreKeySignature,
-      oneTimePreKeyId: otpEntry.key,
-      oneTimePreKey: deserializePublicKey(otpEntry.value),
+      oneTimePreKeyId: withOneTimePreKey ? otpEntry.key : null,
+      oneTimePreKey:
+          withOneTimePreKey ? deserializePublicKey(otpEntry.value) : null,
     );
   }
 }
@@ -500,6 +501,267 @@ void main() {
       );
     });
   });
+
+  group('concurrency', () {
+    // The ratchet awaits between reading a chain key and storing its
+    // successor. Overlapping calls on one session -- a burst from an offline
+    // flush, or a send racing a receive -- must still behave as if serial.
+
+    test('a burst of concurrent decrypts all succeed', () async {
+      final p = await _conversation();
+
+      final burst = <EncryptedPayload>[];
+      for (var i = 0; i < 8; i++) {
+        burst.add(await p.alice.engine.encrypt(p.bob.address, utf8.encode('m$i')));
+      }
+
+      final out = await Future.wait(
+        burst.map((m) => p.bob.engine.decrypt(p.alice.address, m)),
+      );
+      expect(out.map(utf8.decode), [for (var i = 0; i < 8; i++) 'm$i']);
+    });
+
+    test('concurrent encrypts produce decryptable messages', () async {
+      final p = await _conversation();
+
+      final sent = await Future.wait([
+        for (var i = 0; i < 8; i++)
+          p.alice.engine.encrypt(p.bob.address, utf8.encode('c$i')),
+      ]);
+      for (var i = 0; i < 8; i++) {
+        expect(
+          utf8.decode(await p.bob.engine.decrypt(p.alice.address, sent[i])),
+          'c$i',
+        );
+      }
+    });
+  });
+
+  group('prekey messages are authenticated before they change state', () {
+    // A prekey message carries an identity key and handshake material that
+    // nobody has vouched for until its ratchet message decrypts. Anyone who
+    // can inject a frame -- the server included -- can claim to be any peer.
+
+    test('a forged handshake does not replace a working session', () async {
+      final p = await _conversation();
+      final mallory = _Endpoint('mallory', 'm1');
+      await mallory.start();
+
+      final notices = <IdentityChangeNotice>[];
+      final sub = p.bob.engine.identityChanges.listen(notices.add);
+
+      // Mallory builds a real prekey message to Bob and the server delivers
+      // it as if it came from Alice's device.
+      // No one-time prekey: Alice already consumed the one bundleForPeer
+      // hands out, and an unknown prekey id would be rejected before the
+      // handshake gets anywhere near the state this test is about.
+      await mallory.engine.establishOutboundSession(
+        p.bob.address,
+        p.bob.bundleForPeer(withOneTimePreKey: false),
+      );
+      final forged =
+          await mallory.engine.encrypt(p.bob.address, utf8.encode('evil'));
+
+      // A prekey message that decrypts under a new identity is
+      // indistinguishable from Alice reinstalling, and the default policy
+      // accepts it with a notice. The forgery that must change nothing is one
+      // that does not decrypt.
+      final broken = EncryptedPayload(
+        cipherType: forged.cipherType,
+        body: _corrupt(forged.body),
+        initiatorIdentityKey: forged.initiatorIdentityKey,
+        initiatorEphemeralKey: forged.initiatorEphemeralKey,
+        oneTimePreKeyId: forged.oneTimePreKeyId,
+        signedPreKeyId: forged.signedPreKeyId,
+      );
+      final pinnedBefore =
+          await p.bob.sessions.loadPinnedIdentity(p.alice.address.key);
+
+      await expectLater(
+        p.bob.engine.decrypt(p.alice.address, broken),
+        throwsA(anything),
+      );
+
+      final pinnedAfter =
+          await p.bob.sessions.loadPinnedIdentity(p.alice.address.key);
+      expect(pinnedAfter!.identityKey, equals(pinnedBefore!.identityKey),
+          reason: 'an unauthenticated handshake must not re-pin the peer');
+      await Future<void>.delayed(Duration.zero);
+      expect(notices, isEmpty,
+          reason: 'no identity change may be announced for a forgery');
+
+      // Alice's session with Bob is unharmed in both directions.
+      final a = await p.alice.engine.encrypt(p.bob.address, utf8.encode('ok'));
+      expect(utf8.decode(await p.bob.engine.decrypt(p.alice.address, a)), 'ok');
+      final b = await p.bob.engine.encrypt(p.alice.address, utf8.encode('ok2'));
+      expect(
+          utf8.decode(await p.alice.engine.decrypt(p.bob.address, b)), 'ok2');
+      await sub.cancel();
+    });
+
+    test('a failed handshake does not burn the one-time prekey', () async {
+      final alice = _Endpoint('alice', 'a1');
+      final bob = _Endpoint('bob', 'b1');
+      await alice.start();
+      await bob.start();
+
+      final bundle = bob.bundleForPeer();
+      await alice.engine.establishOutboundSession(bob.address, bundle);
+      final genuine =
+          await alice.engine.encrypt(bob.address, utf8.encode('first'));
+      final broken = EncryptedPayload(
+        cipherType: genuine.cipherType,
+        body: _corrupt(genuine.body),
+        initiatorIdentityKey: genuine.initiatorIdentityKey,
+        initiatorEphemeralKey: genuine.initiatorEphemeralKey,
+        oneTimePreKeyId: genuine.oneTimePreKeyId,
+        signedPreKeyId: genuine.signedPreKeyId,
+      );
+
+      await expectLater(
+        bob.engine.decrypt(alice.address, broken),
+        throwsA(anything),
+      );
+      expect(await bob.keys.loadOneTimePreKey(bundle.oneTimePreKeyId!),
+          isNotNull,
+          reason: 'the prekey is destroyed only by a handshake that worked');
+      expect(await bob.engine.hasSession(alice.address), isFalse);
+
+      // The genuine copy still establishes the session afterwards.
+      expect(utf8.decode(await bob.engine.decrypt(alice.address, genuine)),
+          'first');
+      expect(await bob.keys.loadOneTimePreKey(bundle.oneTimePreKeyId!), isNull);
+    });
+  });
+
+  group('signed prekey rotation', () {
+    test('nothing rotates while the key is fresh', () async {
+      final bob = _Endpoint('bob', 'b1');
+      await bob.start();
+      expect(await bob.engine.prepareSignedPreKeyRotation(), isNull);
+    });
+
+    test('a message built on the previous key still decrypts', () async {
+      final alice = _Endpoint('alice', 'a1');
+      final bob = _Endpoint('bob', 'b1');
+      await alice.start();
+      await bob.start();
+
+      // Alice fetched Bob's bundle, then Bob rotated before her message
+      // arrived -- the normal case for a recipient who was offline.
+      final staleBundle = bob.bundleForPeer();
+      final upload =
+          await bob.engine.prepareSignedPreKeyRotation(maxAge: Duration.zero);
+      expect(upload, isNotNull);
+      expect(upload!.keyId, isNot(staleBundle.signedPreKeyId));
+      await bob.engine.commitSignedPreKeyRotation(upload);
+
+      await alice.engine.establishOutboundSession(bob.address, staleBundle);
+      final msg = await alice.engine.encrypt(bob.address, utf8.encode('late'));
+      expect(msg.signedPreKeyId, staleBundle.signedPreKeyId);
+      expect(utf8.decode(await bob.engine.decrypt(alice.address, msg)), 'late');
+    });
+
+    test('a message built on the new key decrypts', () async {
+      final alice = _Endpoint('alice', 'a1');
+      final bob = _Endpoint('bob', 'b1');
+      await alice.start();
+      await bob.start();
+
+      final upload =
+          await bob.engine.prepareSignedPreKeyRotation(maxAge: Duration.zero);
+      await bob.engine.commitSignedPreKeyRotation(upload!);
+
+      final fresh = PreKeyBundle(
+        deviceId: bob.deviceId,
+        registrationId: bob.published.registrationId,
+        identityKey: deserializePublicKey(bob.published.identityKey),
+        identityKeyEd25519: bob.published.identityKeyEd25519,
+        signedPreKeyId: upload.keyId,
+        signedPreKey: deserializePublicKey(upload.publicKey),
+        signedPreKeySignature: upload.signature,
+      );
+      await alice.engine.establishOutboundSession(bob.address, fresh);
+      final msg = await alice.engine.encrypt(bob.address, utf8.encode('new'));
+      expect(utf8.decode(await bob.engine.decrypt(alice.address, msg)), 'new');
+    });
+
+    test('a key two rotations old is gone', () async {
+      // Keeping every old signed prekey would quietly undo the forward
+      // secrecy rotation exists to provide.
+      final alice = _Endpoint('alice', 'a1');
+      final bob = _Endpoint('bob', 'b1');
+      await alice.start();
+      await bob.start();
+
+      final ancient = bob.bundleForPeer();
+      for (var i = 0; i < 2; i++) {
+        final upload =
+            await bob.engine.prepareSignedPreKeyRotation(maxAge: Duration.zero);
+        await bob.engine.commitSignedPreKeyRotation(upload!);
+      }
+
+      await alice.engine.establishOutboundSession(bob.address, ancient);
+      final msg = await alice.engine.encrypt(bob.address, utf8.encode('x'));
+      await expectLater(
+        bob.engine.decrypt(alice.address, msg),
+        throwsA(anything),
+      );
+    });
+  });
+
+  group('one-time prekey ids', () {
+    test('successive pools never reuse an id', () async {
+      // A reused id makes the device overwrite a private key the server may
+      // still hand out, breaking every session built from the old public key.
+      final bob = _Endpoint('bob', 'b1');
+      await bob.start(preKeys: 100);
+
+      final seen = bob.published.oneTimePreKeys.keys.toSet();
+      var lastMax = seen.reduce((a, b) => a > b ? a : b);
+      for (var i = 0; i < 20; i++) {
+        final batch = await bob.engine.generateOneTimePreKeys(100);
+        expect(seen.intersection(batch.keys.toSet()), isEmpty);
+        // Ids continue from a persisted counter. A random base per pool would
+        // pass the overlap check above most of the time and collide rarely,
+        // which is the failure mode this guards against.
+        final ids = batch.keys.toList()..sort();
+        expect(ids.first, lastMax + 1);
+        lastMax = ids.last;
+        seen.addAll(batch.keys);
+      }
+    });
+  });
+}
+
+class _Conversation {
+  _Conversation(this.alice, this.bob);
+  final _Endpoint alice;
+  final _Endpoint bob;
+}
+
+/// Alice and Bob with a settled session: both have sent and received.
+Future<_Conversation> _conversation() async {
+  final alice = _Endpoint('alice', 'a1');
+  final bob = _Endpoint('bob', 'b1');
+  await alice.start();
+  await bob.start();
+
+  await alice.engine.establishOutboundSession(bob.address, bob.bundleForPeer());
+  final first = await alice.engine.encrypt(bob.address, utf8.encode('hi'));
+  await bob.engine.decrypt(alice.address, first);
+  final reply = await bob.engine.encrypt(alice.address, utf8.encode('hey'));
+  await alice.engine.decrypt(bob.address, reply);
+  return _Conversation(alice, bob);
+}
+
+/// Flips a bit inside the AEAD ciphertext of a serialized ratchet message.
+Uint8List _corrupt(Uint8List body) {
+  final json = jsonDecode(utf8.decode(body)) as Map<String, dynamic>;
+  final ct = base64Decode(json['c'] as String);
+  ct[ct.length - 1] ^= 0x01;
+  json['c'] = base64Encode(ct);
+  return Uint8List.fromList(utf8.encode(jsonEncode(json)));
 }
 
 /// No-op: decrypt() completes the responder's half of X3DH automatically from

@@ -21,6 +21,13 @@ type ActiveSession struct {
 	// RefreshHash is the hex-encoded SHA-256 of the opaque refresh token.
 	RefreshHash string `gorm:"type:varchar(64);uniqueIndex;not null" json:"-"`
 
+	// PrevRefreshHash is the token this one replaced at RotatedAt. It is
+	// honoured once more within a short grace period, for a client whose
+	// refresh response was lost; after that, presenting it means the token
+	// leaked and the session is revoked.
+	PrevRefreshHash *string    `gorm:"type:varchar(64)" json:"-"`
+	RotatedAt       *time.Time `json:"-"`
+
 	UserAgent string `gorm:"type:varchar(256)" json:"user_agent,omitempty"`
 	IPHash    string `gorm:"type:varchar(64)" json:"-"`
 

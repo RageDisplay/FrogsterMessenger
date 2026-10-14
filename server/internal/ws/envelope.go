@@ -17,6 +17,11 @@ const (
 	TypeKeyChange   = "key_change"
 	TypeError       = "error"
 	TypeSyncDone    = "sync_done"
+
+	// TypeDelivered is sent by a client once it has stored the messages
+	// listed in IDs. Until then they stay queued and are redelivered on the
+	// next connect, so a frame lost with a dying socket is not lost for good.
+	TypeDelivered = "delivered"
 )
 
 // Address identifies a specific device of a specific user. Messages are
@@ -84,6 +89,10 @@ type Envelope struct {
 	ContentHint string `json:"content_hint,omitempty"`
 	Timestamp   int64  `json:"ts,omitempty"`
 	Seq         int64  `json:"seq,omitempty"`
+
+	// IDs lists message ids, for frames that refer to several messages at
+	// once (TypeDelivered).
+	IDs []string `json:"ids,omitempty"`
 
 	// Error carries a human-readable reason for TypeError frames.
 	Error string `json:"error,omitempty"`

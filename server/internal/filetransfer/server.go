@@ -78,7 +78,7 @@ func (s *Service) Upload(stream frogsterv1.FileTransfer_UploadServer) error {
 		return status.Error(codes.InvalidArgument, "digest must be 32 bytes")
 	}
 
-	blobID, writer, err := s.blobs.Create()
+	blobID, writer, err := s.blobs.Create(claims.UserID.String())
 	if err != nil {
 		s.log.Error("create blob", "err", err, "user_id", claims.UserID)
 		return status.Error(codes.Internal, "could not store blob")
@@ -143,7 +143,7 @@ func (s *Service) Upload(stream frogsterv1.FileTransfer_UploadServer) error {
 	return stream.SendAndClose(&frogsterv1.UploadResponse{
 		BlobId:     blobID,
 		StoredSize: uint64(digested.Written()),
-		ExpiresAt:  time.Now().Add(blobTTL).Unix(),
+		ExpiresAt:  time.Now().Add(BlobTTL).Unix(),
 	})
 }
 
@@ -215,6 +215,21 @@ func (s *Service) Delete(
 	claims, ok := ClaimsFrom(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "missing credentials")
+	}
+
+	// Only the uploader may delete. Ids travel inside chat messages, so every
+	// recipient knows them; without this check any of them could pull an
+	// attachment out from under everyone else.
+	owner, err := s.blobs.Owner(req.GetBlobId())
+	if errors.Is(err, ErrBlobNotFound) {
+		return &frogsterv1.DeleteResponse{Deleted: false}, nil
+	}
+	if err != nil {
+		s.log.Error("read blob owner", "err", err, "blob_id", req.GetBlobId())
+		return nil, status.Error(codes.Internal, "could not delete blob")
+	}
+	if owner != claims.UserID.String() {
+		return nil, status.Error(codes.PermissionDenied, "only the uploader can delete a blob")
 	}
 
 	if err := s.blobs.Remove(req.GetBlobId()); err != nil {

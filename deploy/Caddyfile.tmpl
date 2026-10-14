@@ -1,0 +1,38 @@
+# Rendered by deploy/install.sh into deploy/Caddyfile. Edit this template,
+# not the rendered file: re-running the installer overwrites it.
+#
+# Placeholders: __SITE__ (domain or IP), __EMAIL_LINE__, __TLS_BLOCK__,
+# __HTTP_BLOCK__ (plain-HTTP site, used only with a self-signed CA).
+
+{
+	__EMAIL_LINE__
+	servers {
+		# Clients reach the servers only through this proxy; remember that
+		# when reading X-Forwarded-For upstream.
+		trusted_proxies static private_ranges
+	}
+}
+
+__SITE__ {
+	__TLS_BLOCK__
+
+	# Attachments: gRPC, spoken to filed over cleartext HTTP/2 inside the
+	# private network. Everything else, WebSocket included, is frogsterd.
+	handle /frogster.v1.FileTransfer/* {
+		reverse_proxy h2c://filed:8081
+	}
+
+	handle {
+		reverse_proxy frogsterd:8080
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+
+	# No access log: client addresses and user agents are metadata the
+	# service has no use for. frogsterd logs requests without addresses.
+}
+
+__HTTP_BLOCK__

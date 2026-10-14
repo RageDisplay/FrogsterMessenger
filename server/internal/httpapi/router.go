@@ -37,6 +37,14 @@ type Server struct {
 	// wsHandler serves the WebSocket upgrade. Injected so that httpapi does
 	// not depend on the ws package, keeping the dependency one-directional.
 	wsHandler http.Handler
+
+	// ready reports whether dependencies (database, Redis) are reachable.
+	ready func(ctx context.Context) error
+}
+
+// SetReadinessCheck installs the dependency check behind /readyz.
+func (s *Server) SetReadinessCheck(check func(ctx context.Context) error) {
+	s.ready = check
 }
 
 // NewServer builds the API server.
@@ -71,6 +79,12 @@ func (s *Server) Routes() http.Handler {
 
 	requireAuth := auth.RequireAuth(s.tokens, s.store)
 
+	// authed applies authentication and the per-user budget. Endpoints with a
+	// stricter rule of their own add it on top.
+	authed := func(h http.HandlerFunc) http.Handler {
+		return requireAuth(ratelimit.Middleware(s.limiter, ratelimit.RuleAPI, byUser, s.log)(h))
+	}
+
 	// Public endpoints.
 	mux.Handle("POST /v1/register",
 		ratelimit.Middleware(s.limiter, ratelimit.RuleRegister, ratelimit.ByIP("register"), s.log)(
@@ -80,30 +94,37 @@ func (s *Server) Routes() http.Handler {
 		ratelimit.Middleware(s.limiter, ratelimit.RuleLogin, loginKey, s.log)(
 			http.HandlerFunc(s.handleLogin)))
 
+	mux.Handle("POST /v1/token/refresh",
+		ratelimit.Middleware(s.limiter, ratelimit.RuleRefresh, ratelimit.ByIP("refresh"), s.log)(
+			http.HandlerFunc(s.handleRefresh)))
+
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("GET /readyz", s.handleReady)
 
 	// Authenticated endpoints.
 	mux.Handle("GET /v1/keys/{username}",
 		requireAuth(ratelimit.Middleware(s.limiter, ratelimit.RuleKeys, byUser, s.log)(
 			http.HandlerFunc(s.handleGetKeys))))
 
-	mux.Handle("GET /v1/keys/count",
-		requireAuth(http.HandlerFunc(s.handlePreKeyCount)))
+	// /v1/keys/count shadows a user literally named "count"; the /v1/me form
+	// is the one clients use. The old path stays for older builds.
+	mux.Handle("GET /v1/keys/count", authed(s.handlePreKeyCount))
+	mux.Handle("GET /v1/me/keys/count", authed(s.handlePreKeyCount))
 
-	mux.Handle("POST /v1/keys",
-		requireAuth(http.HandlerFunc(s.handleUploadPreKeys)))
+	mux.Handle("POST /v1/keys", authed(s.handleUploadPreKeys))
+	mux.Handle("PUT /v1/keys/signed", authed(s.handleRotateSignedPreKey))
 
-	mux.Handle("GET /v1/users/{id}",
-		requireAuth(http.HandlerFunc(s.handleLookupUser)))
+	mux.Handle("GET /v1/users/{id}", authed(s.handleLookupUser))
 
-	mux.Handle("POST /v1/chats",
-		requireAuth(http.HandlerFunc(s.handleCreateChat)))
+	mux.Handle("POST /v1/chats", authed(s.handleCreateChat))
 
-	mux.Handle("GET /v1/sessions",
-		requireAuth(http.HandlerFunc(s.handleListSessions)))
+	mux.Handle("GET /v1/sessions", authed(s.handleListSessions))
+	mux.Handle("DELETE /v1/sessions/{id}", authed(s.handleRevokeSession))
 
-	mux.Handle("DELETE /v1/sessions/{id}",
-		requireAuth(http.HandlerFunc(s.handleRevokeSession)))
+	mux.Handle("POST /v1/logout", authed(s.handleLogout))
+	mux.Handle("POST /v1/password",
+		requireAuth(ratelimit.Middleware(s.limiter, ratelimit.RulePassword, byUser, s.log)(
+			http.HandlerFunc(s.handleChangePassword))))
 
 	// The WebSocket endpoint authenticates inside the handler, because the
 	// upgrade carries its token in a subprotocol header rather than a normal
@@ -115,9 +136,7 @@ func (s *Server) Routes() http.Handler {
 	return recoverer(s.log)(requestLogger(s.log)(securityHeaders(mux)))
 }
 
-// loginKey buckets login attempts by IP and username together, so that
-// spraying one password across many accounts from one address is limited, and
-// so is hammering one account from many addresses.
+// loginKey buckets login attempts by client address.
 func loginKey(r *http.Request) string {
 	return "login:" + ratelimit.ClientIP(r)
 }
@@ -131,8 +150,25 @@ func byUser(r *http.Request) string {
 	return "user:" + claims.UserID.String()
 }
 
+// handleHealth is the liveness probe: the process is up and serving. It
+// deliberately checks nothing else, so a database outage does not get a
+// healthy server restarted in a loop.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"}, s.log)
+}
+
+// handleReady is the readiness probe: dependencies answer.
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	if s.ready != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		if err := s.ready(ctx); err != nil {
+			s.log.Warn("readiness check failed", "err", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable"}, s.log)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"}, s.log)
 }
 
 // claimsOrUnauthorized fetches claims or writes a 401.

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -11,12 +12,18 @@ import (
 	"github.com/vectrixsecurity/frogster/server/internal/models"
 )
 
+// ErrDuplicateMessage reports that the sending device already sent a message
+// with this client id to this chat. PersistMessage fills in the stored message
+// so the caller can acknowledge it again without delivering it twice.
+var ErrDuplicateMessage = errors.New("duplicate message")
+
 // PersistMessage stores a message and its per-device delivery rows in one
 // transaction, assigning the next per-chat sequence number.
 //
 // Sequence assignment happens under a row lock on the chat so that concurrent
 // senders cannot receive the same seq, which would break the total ordering
-// clients rely on to detect gaps.
+// clients rely on to detect gaps. The same lock makes the duplicate check
+// race-free: two resends of one message cannot both pass it.
 func (s *Store) PersistMessage(
 	ctx context.Context,
 	msg *models.Message,
@@ -27,6 +34,20 @@ func (s *Store) PersistMessage(
 		var chat models.Chat
 		if err := tx.Clauses(forUpdate()).First(&chat, "id = ?", msg.ChatID).Error; err != nil {
 			return fmt.Errorf("lock chat: %w", err)
+		}
+
+		if msg.ClientID != nil {
+			var existing models.Message
+			err := tx.Where("chat_id = ? AND sender_dev_id = ? AND client_id = ?",
+				msg.ChatID, msg.SenderDevID, *msg.ClientID).
+				Limit(1).Find(&existing).Error
+			if err != nil {
+				return fmt.Errorf("check duplicate: %w", err)
+			}
+			if existing.ID != uuid.Nil {
+				*msg = existing
+				return ErrDuplicateMessage
+			}
 		}
 
 		var maxSeq *int64
@@ -81,6 +102,59 @@ func (s *Store) PendingDeliveries(
 		return nil, fmt.Errorf("pending deliveries: %w", err)
 	}
 	return out, nil
+}
+
+// PendingDeliveriesAfter pages through a device's queued mail in arrival
+// order, starting after the delivery row afterID.
+//
+// Rows stay pending until the device acknowledges them, so draining the queue
+// cannot simply re-read "the first N pending rows": that would return the same
+// rows again. The cursor makes each page pick up where the last one ended.
+func (s *Store) PendingDeliveriesAfter(
+	ctx context.Context,
+	userID, deviceID uuid.UUID,
+	afterID uint64,
+	limit int,
+) ([]models.MessageDelivery, error) {
+	var out []models.MessageDelivery
+	err := s.db.WithContext(ctx).
+		Where("user_id = ? AND device_id = ? AND state = ? AND id > ?",
+			userID, deviceID, models.DeliveryPending, afterID).
+		Order("id ASC").
+		Limit(limit).
+		Find(&out).Error
+	if err != nil {
+		return nil, fmt.Errorf("pending deliveries: %w", err)
+	}
+	return out, nil
+}
+
+// AcknowledgeDeliveries retires a device's queued deliveries for the messages
+// it reports having received, identified by the ids it saw on the wire.
+//
+// Scoped to the acknowledging device, so one device cannot clear another's
+// queue. Returns the number of rows retired.
+func (s *Store) AcknowledgeDeliveries(
+	ctx context.Context,
+	userID, deviceID uuid.UUID,
+	wireIDs []string,
+) (int64, error) {
+	if len(wireIDs) == 0 {
+		return 0, nil
+	}
+	res := s.db.WithContext(ctx).Exec(`
+		UPDATE message_deliveries d
+		   SET state = ?, delivered_at = now()
+		  FROM messages m
+		 WHERE d.message_id = m.id
+		   AND d.user_id = ? AND d.device_id = ? AND d.state = ?
+		   AND (m.client_id IN ? OR m.id::text IN ?)`,
+		models.DeliveryDelivered, userID, deviceID, models.DeliveryPending,
+		wireIDs, wireIDs)
+	if res.Error != nil {
+		return 0, fmt.Errorf("acknowledge deliveries: %w", res.Error)
+	}
+	return res.RowsAffected, nil
 }
 
 // MessagesByIDs loads messages by id, for group deliveries whose ciphertext

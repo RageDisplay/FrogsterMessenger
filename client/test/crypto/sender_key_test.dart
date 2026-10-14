@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:frogster/crypto/primitives.dart';
 import 'package:frogster/crypto/ratchet/sender_key.dart';
+import 'package:frogster/crypto/signing.dart';
 
 String _text(Uint8List b) => utf8.decode(b);
 List<int> _bytes(String s) => utf8.encode(s);
@@ -480,6 +481,161 @@ void main() {
         _text(await decryptGroupMessage(
             state: bob, message: parsed, currentEpoch: 0)),
         'wire',
+      );
+    });
+  });
+
+  group('ordering and robustness', () {
+    test('out-of-order messages decrypt', () async {
+      // The server fans group messages out per device, and an offline flush
+      // can interleave with live delivery, so order is not guaranteed.
+      final alice = await createSenderKey(
+        chatId: 'chat-1',
+        epoch: 0,
+        senderDeviceId: 'alice-1',
+      );
+      final bob = _distribute(alice);
+
+      final m0 = await encryptGroupMessage(state: alice, plaintext: _bytes('0'));
+      final m1 = await encryptGroupMessage(state: alice, plaintext: _bytes('1'));
+      final m2 = await encryptGroupMessage(state: alice, plaintext: _bytes('2'));
+
+      for (final m in [m2, m0, m1]) {
+        expect(
+          _text(await decryptGroupMessage(
+              state: bob, message: m, currentEpoch: 0)),
+          '${m.iteration}',
+        );
+      }
+      expect(bob.skippedKeyCount, 0,
+          reason: 'a skipped key is removed once it is used');
+    });
+
+    test('a skipped key is single use', () async {
+      final alice = await createSenderKey(
+        chatId: 'chat-1',
+        epoch: 0,
+        senderDeviceId: 'alice-1',
+      );
+      final bob = _distribute(alice);
+
+      final m0 = await encryptGroupMessage(state: alice, plaintext: _bytes('a'));
+      final m1 = await encryptGroupMessage(state: alice, plaintext: _bytes('b'));
+      await decryptGroupMessage(state: bob, message: m1, currentEpoch: 0);
+      await decryptGroupMessage(state: bob, message: m0, currentEpoch: 0);
+
+      await expectLater(
+        decryptGroupMessage(state: bob, message: m0, currentEpoch: 0),
+        throwsA(isA<SenderKeyException>()),
+      );
+    });
+
+    test('skipped keys survive serialization', () async {
+      final alice = await createSenderKey(
+        chatId: 'chat-1',
+        epoch: 0,
+        senderDeviceId: 'alice-1',
+      );
+      var bob = _distribute(alice);
+
+      final m0 = await encryptGroupMessage(state: alice, plaintext: _bytes('x'));
+      final m1 = await encryptGroupMessage(state: alice, plaintext: _bytes('y'));
+      await decryptGroupMessage(state: bob, message: m1, currentEpoch: 0);
+
+      bob = SenderKeyState.fromJson(
+        jsonDecode(jsonEncode(bob.toJson())) as Map<String, dynamic>,
+      );
+      expect(
+        _text(await decryptGroupMessage(
+            state: bob, message: m0, currentEpoch: 0)),
+        'x',
+      );
+    });
+
+    test('a member cannot swap content under the sender signature', () async {
+      // Every member holds the sender's chain key, so a member can produce a
+      // ciphertext that decrypts under the sender's next message key. The
+      // signature must cover that ciphertext, or the member could attach the
+      // sender's genuine signature to it.
+      final alice = await createSenderKey(
+        chatId: 'chat-1',
+        epoch: 0,
+        senderDeviceId: 'alice-1',
+      );
+      final mallory = _distribute(alice);
+      final carol = _distribute(alice);
+
+      final genuine =
+          await encryptGroupMessage(state: alice, plaintext: _bytes('real'));
+
+      final messageKey =
+          (await advanceSenderChainForTesting(mallory.chainKey)).messageKey;
+      final substituted = SenderKeyMessage(
+        chatId: genuine.chatId,
+        epoch: genuine.epoch,
+        senderDeviceId: genuine.senderDeviceId,
+        iteration: genuine.iteration,
+        ciphertext: await aeadEncrypt(
+          key: messageKey,
+          plaintext: _bytes('forged by mallory'),
+          associatedData: genuine.signedBytes,
+        ),
+        signature: genuine.signature,
+      );
+
+      await expectLater(
+        decryptGroupMessage(state: carol, message: substituted, currentEpoch: 0),
+        throwsA(isA<SenderKeyException>()),
+      );
+      // Carol's chain is untouched, so the genuine message still decrypts.
+      expect(
+        _text(await decryptGroupMessage(
+            state: carol, message: genuine, currentEpoch: 0)),
+        'real',
+      );
+    });
+
+    test('a message that fails to decrypt does not advance the chain',
+        () async {
+      // Signed by the real sender but undecryptable, as a buggy client or
+      // corrupted storage would produce. It must not burn the key of the
+      // message that follows.
+      final alice = await createSenderKey(
+        chatId: 'chat-1',
+        epoch: 0,
+        senderDeviceId: 'alice-1',
+      );
+      final bob = _distribute(alice);
+
+      final good =
+          await encryptGroupMessage(state: alice, plaintext: _bytes('good'));
+      final badCiphertext = AeadCiphertext(
+        nonce: good.ciphertext.nonce,
+        body: Uint8List.fromList(good.ciphertext.body)..[0] ^= 0x01,
+        tag: good.ciphertext.tag,
+      );
+      final bad = SenderKeyMessage(
+        chatId: good.chatId,
+        epoch: good.epoch,
+        senderDeviceId: good.senderDeviceId,
+        iteration: good.iteration,
+        ciphertext: badCiphertext,
+        signature: await sign(
+          seed: alice.signingSeed!,
+          message:
+              SenderKeyMessage.signaturePayload(good.signedBytes, badCiphertext),
+        ),
+      );
+
+      await expectLater(
+        decryptGroupMessage(state: bob, message: bad, currentEpoch: 0),
+        throwsA(isA<SenderKeyException>()),
+      );
+      expect(bob.iteration, 0);
+      expect(
+        _text(await decryptGroupMessage(
+            state: bob, message: good, currentEpoch: 0)),
+        'good',
       );
     });
   });

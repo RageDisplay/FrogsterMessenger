@@ -21,10 +21,22 @@ import (
 // ErrBlobNotFound is returned for an unknown or expired blob id.
 var ErrBlobNotFound = errors.New("blob not found")
 
+// ErrNotOwner is returned when someone other than the uploader tries to
+// delete a blob.
+var ErrNotOwner = errors.New("not the owner of this blob")
+
 // BlobStore persists opaque byte streams.
 type BlobStore interface {
-	// Create opens a writer for a new blob and returns its id.
-	Create() (id string, w io.WriteCloser, err error)
+	// Create opens a writer for a new blob owned by owner and returns its
+	// id.
+	Create(owner string) (id string, w io.WriteCloser, err error)
+
+	// Owner reports who uploaded a blob. Blobs stored before ownership was
+	// recorded have no owner, reported as "".
+	Owner(id string) (string, error)
+
+	// Sweep removes blobs older than maxAge and reports how many went.
+	Sweep(maxAge time.Duration) (int, error)
 
 	// Open returns a reader over a stored blob and its size.
 	Open(id string) (r io.ReadCloser, size int64, err error)
@@ -55,12 +67,18 @@ func NewFileBlobStore(dir string) (*FileBlobStore, error) {
 }
 
 // Create implements BlobStore.
-func (s *FileBlobStore) Create() (string, io.WriteCloser, error) {
+//
+// The owner is recorded in a sidecar file next to the blob. It is the only
+// metadata kept: who uploaded, never what or for whom.
+func (s *FileBlobStore) Create(owner string) (string, io.WriteCloser, error) {
 	id := uuid.NewString()
 	path := s.pathFor(id)
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", nil, fmt.Errorf("create blob shard: %w", err)
+	}
+	if err := os.WriteFile(path+ownerSuffix, []byte(owner), 0o600); err != nil {
+		return "", nil, fmt.Errorf("record blob owner: %w", err)
 	}
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
@@ -103,8 +121,63 @@ func (s *FileBlobStore) Remove(id string) error {
 		}
 		return fmt.Errorf("remove blob: %w", err)
 	}
+	_ = os.Remove(s.pathFor(id) + ownerSuffix)
 	return nil
 }
+
+// Owner implements BlobStore.
+func (s *FileBlobStore) Owner(id string) (string, error) {
+	if !validBlobID(id) {
+		return "", ErrBlobNotFound
+	}
+	if _, err := os.Stat(s.pathFor(id)); err != nil {
+		if os.IsNotExist(err) {
+			return "", ErrBlobNotFound
+		}
+		return "", fmt.Errorf("stat blob: %w", err)
+	}
+	owner, err := os.ReadFile(s.pathFor(id) + ownerSuffix)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read blob owner: %w", err)
+	}
+	return string(owner), nil
+}
+
+// Sweep implements BlobStore. Age is taken from the file's modification
+// time, which is when the upload finished writing it.
+func (s *FileBlobStore) Sweep(maxAge time.Duration) (int, error) {
+	cutoff := time.Now().Add(-maxAge)
+	removed := 0
+	err := filepath.WalkDir(s.root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !validBlobID(d.Name()) {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil // removed concurrently
+		}
+		if info.ModTime().Before(cutoff) {
+			if err := s.Remove(d.Name()); err == nil {
+				removed++
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return removed, fmt.Errorf("sweep blobs: %w", err)
+	}
+	return removed, nil
+}
+
+// ownerSuffix names the sidecar file holding a blob's uploader. A blob id is
+// a bare UUID, so the sidecar can never be mistaken for a blob.
+const ownerSuffix = ".owner"
 
 // Size implements BlobStore.
 func (s *FileBlobStore) Size(id string) (int64, error) {
@@ -168,8 +241,8 @@ func (w *digestWriter) Write(p []byte) (int, error) {
 func (w *digestWriter) Digest() []byte { return w.hash.Sum(nil) }
 func (w *digestWriter) Written() int64 { return w.writen }
 
-// blobTTL bounds how long an attachment survives.
+// BlobTTL bounds how long an attachment survives.
 //
 // Retention is capped because the server holds ciphertext it can never read:
 // keeping it forever grows a store of material that is only ever a liability.
-const blobTTL = 30 * 24 * time.Hour
+const BlobTTL = 30 * 24 * time.Hour

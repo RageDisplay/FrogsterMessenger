@@ -42,6 +42,8 @@ func (h *FrameHandler) HandleFrame(c *ws.Client, env *ws.Envelope) {
 		h.handleMessage(ctx, c, env)
 	case ws.TypeTyping, ws.TypeReceipt:
 		h.handleEphemeral(ctx, c, env)
+	case ws.TypeDelivered:
+		h.handleDelivered(ctx, c, env)
 	default:
 		c.Send(&ws.Envelope{Version: 1, Type: ws.TypeError, Error: "unsupported frame type"})
 	}
@@ -85,6 +87,31 @@ func (h *FrameHandler) handleMessage(ctx context.Context, c *ws.Client, env *ws.
 		Seq:       msg.Seq,
 		Timestamp: msg.CreatedAt.UnixMilli(),
 	})
+}
+
+// maxAckIDs bounds one delivered frame. Clients batch acknowledgements, and a
+// flush page is far smaller than this.
+const maxAckIDs = 500
+
+// handleDelivered retires the queued deliveries a device has stored.
+func (h *FrameHandler) handleDelivered(ctx context.Context, c *ws.Client, env *ws.Envelope) {
+	if len(env.IDs) == 0 {
+		return
+	}
+	if len(env.IDs) > maxAckIDs {
+		c.Send(&ws.Envelope{Version: 1, Type: ws.TypeError, Error: "too many ids in one acknowledgement"})
+		return
+	}
+	for _, id := range env.IDs {
+		if id == "" || len(id) > maxClientIDLength {
+			c.Send(&ws.Envelope{Version: 1, Type: ws.TypeError, Error: "malformed message id"})
+			return
+		}
+	}
+	if _, err := h.router.Acknowledge(ctx, c.Key(), env.IDs); err != nil {
+		h.log.Warn("acknowledge deliveries", "err", err,
+			"user_id", c.Key().UserID, "device_id", c.Key().DeviceID)
+	}
 }
 
 // handleEphemeral forwards typing indicators and read receipts.

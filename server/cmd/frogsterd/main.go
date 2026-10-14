@@ -7,7 +7,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,6 +23,7 @@ import (
 	"github.com/vectrixsecurity/frogster/server/internal/config"
 	"github.com/vectrixsecurity/frogster/server/internal/delivery"
 	"github.com/vectrixsecurity/frogster/server/internal/httpapi"
+	"github.com/vectrixsecurity/frogster/server/internal/janitor"
 	"github.com/vectrixsecurity/frogster/server/internal/logging"
 	"github.com/vectrixsecurity/frogster/server/internal/pubsub"
 	"github.com/vectrixsecurity/frogster/server/internal/ratelimit"
@@ -28,7 +31,14 @@ import (
 	"github.com/vectrixsecurity/frogster/server/internal/ws"
 )
 
+// version is set at build time (-ldflags "-X main.version=...").
+var version = "dev"
+
 func main() {
+	// The container image has no shell or curl, so the binary probes itself.
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(healthcheck())
+	}
 	if err := run(); err != nil {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
@@ -41,14 +51,18 @@ func run() error {
 		return err
 	}
 
-	log := logging.New(cfg.Env, slog.LevelInfo)
+	log := logging.New(cfg.Env, cfg.LogLevel)
 	if cfg.NodeID == "" {
 		cfg.NodeID = uuid.NewString()
 	}
-	log.Info("starting frogsterd", "env", cfg.Env, "addr", cfg.Addr, "node_id", cfg.NodeID)
+	log.Info("starting frogsterd", "version", version, "env", cfg.Env, "addr", cfg.Addr, "node_id", cfg.NodeID)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if err := ratelimit.SetTrustedProxies(cfg.TrustedProxies); err != nil {
+		return err
+	}
 
 	st, err := store.Open(ctx, cfg.DatabaseURL, log)
 	if err != nil {
@@ -81,6 +95,18 @@ func run() error {
 		broker = pubsub.NewNopBroker()
 	}
 	defer broker.Close()
+
+	if mem, ok := limiter.(*ratelimit.MemoryLimiter); ok {
+		go reapLimiter(ctx, mem)
+	}
+
+	go janitor.Run(ctx, time.Hour, log,
+		janitor.PurgeTask(st, store.RetentionPolicy{
+			UndeliveredQueue: cfg.QueueRetention,
+			Delivered:        7 * 24 * time.Hour,
+			Spent:            30 * 24 * time.Hour,
+		}, log),
+	)
 
 	tokens := auth.NewManager(cfg.JWTSecret, cfg.AccessTokenTTL, cfg.RefreshTokenTTL)
 
@@ -117,6 +143,17 @@ func run() error {
 	)
 
 	api := httpapi.NewServer(cfg, st, tokens, limiter, router, wsHandler, log)
+	api.SetReadinessCheck(func(ctx context.Context) error {
+		if err := st.Ping(ctx); err != nil {
+			return fmt.Errorf("postgres: %w", err)
+		}
+		if rdb != nil {
+			if err := rdb.Ping(ctx).Err(); err != nil {
+				return fmt.Errorf("redis: %w", err)
+			}
+		}
+		return nil
+	})
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
@@ -176,36 +213,43 @@ func allowedOrigins(cfg *config.Config) []string {
 	if cfg.IsDev() {
 		return []string{"*"}
 	}
-	if v := os.Getenv("FROGSTER_ALLOWED_ORIGINS"); v != "" {
-		return splitComma(v)
-	}
-	return nil
+	return cfg.AllowedOrigins
 }
 
-func splitComma(s string) []string {
-	var out []string
-	start := 0
-	for i := range len(s) {
-		if s[i] == ',' {
-			if seg := trim(s[start:i]); seg != "" {
-				out = append(out, seg)
-			}
-			start = i + 1
+// reapLimiter bounds the in-memory limiter, which otherwise keeps a bucket
+// for every address and user it has ever seen.
+func reapLimiter(ctx context.Context, l *ratelimit.MemoryLimiter) {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			l.Reap(time.Hour)
 		}
 	}
-	if seg := trim(s[start:]); seg != "" {
-		out = append(out, seg)
-	}
-	return out
 }
 
-func trim(s string) string {
-	i, j := 0, len(s)
-	for i < j && (s[i] == ' ' || s[i] == '\t') {
-		i++
+// healthcheck probes the local liveness endpoint, for the container
+// healthcheck. Returns the process exit code.
+func healthcheck() int {
+	addr := os.Getenv("FROGSTER_ADDR")
+	if addr == "" {
+		addr = ":8080"
 	}
-	for j > i && (s[j-1] == ' ' || s[j-1] == '\t') {
-		j--
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 1
 	}
-	return s[i:j]
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get("http://127.0.0.1:" + port + "/healthz")
+	if err != nil {
+		return 1
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 1
+	}
+	return 0
 }
