@@ -44,7 +44,7 @@ ipconfig
 Откройте PowerShell в папке проекта.
 
 ```powershell
-cd d:\VectrixSecurity\Frogster
+cd Frogster
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
@@ -68,7 +68,7 @@ redis      Up ... (healthy)
 ## Часть 3. Применить миграции
 
 ```powershell
-cd d:\VectrixSecurity\Frogster\server
+cd \Frogster\server
 go run ./cmd/migrate up
 ```
 
@@ -90,7 +90,7 @@ migrations complete
 ### Окно 1 — сервер сообщений
 
 ```powershell
-cd d:\VectrixSecurity\Frogster\server
+cd \Frogster\server
 $env:FROGSTER_ENV="dev"
 $env:FROGSTER_REDIS_URL="redis://localhost:16379/0"
 $env:FROGSTER_ADDR="0.0.0.0:18080"
@@ -106,7 +106,7 @@ msg="http server listening" addr=0.0.0.0:18080
 ### Окно 2 — сервер вложений
 
 ```powershell
-cd d:\VectrixSecurity\Frogster\server
+cd \Frogster\server
 $env:FROGSTER_ENV="dev"
 $env:FROGSTER_REDIS_URL="redis://localhost:16379/0"
 $env:FROGSTER_FILED_ADDR="0.0.0.0:18081"
@@ -171,7 +171,7 @@ http://ВАШ_IP:18080/healthz
 Проверьте, что телефон виден:
 
 ```powershell
-cd d:\VectrixSecurity\Frogster\client
+cd \Frogster\client
 flutter devices
 ```
 
@@ -380,7 +380,7 @@ msg="message received" user_id=1b1a... device_id=4677... bytes=748
 Затем в новом окне PowerShell:
 
 ```powershell
-cd d:\VectrixSecurity\Frogster
+cd \Frogster
 docker compose -f deploy/docker-compose.yml exec postgres psql -U frogster -d frogster -c "SELECT count(*) FROM message_deliveries WHERE position('СЕКРЕТНОЕСЛОВО' in encode(ciphertext,'escape')) > 0;"
 ```
 
@@ -407,7 +407,7 @@ docker compose -f deploy/docker-compose.yml exec postgres psql -U frogster -d fr
 Отправьте фото, затем:
 
 ```powershell
-dir d:\VectrixSecurity\Frogster\server\data\blobs /s
+dir Frogster\server\data\blobs /s
 ```
 
 Файлы там зашифрованы: у PNG не будет сигнатуры формата, открыть их нельзя.
@@ -430,7 +430,7 @@ dir d:\VectrixSecurity\Frogster\server\data\blobs /s
 Лимит 5 регистраций в час с одного адреса. Сбросить:
 
 ```powershell
-cd d:\VectrixSecurity\Frogster
+cd \Frogster
 docker compose -f deploy/docker-compose.yml exec redis redis-cli EVAL "local ks=redis.call('keys','frogster:rl:*'); for i=1,#ks do redis.call('del',ks[i]) end; return #ks" 0
 ```
 
@@ -458,7 +458,7 @@ docker compose -f deploy/docker-compose.yml up -d
 2. Есть, но не появляется у получателя — соберите логи телефона:
 
 ```powershell
-cd d:\VectrixSecurity\Frogster\client
+cd \Frogster\client
 flutter logs
 ```
 
@@ -469,7 +469,7 @@ flutter logs
 Стирает **все** аккаунты и переписку:
 
 ```powershell
-cd d:\VectrixSecurity\Frogster
+cd \Frogster
 docker compose -f deploy/docker-compose.yml exec postgres psql -U frogster -d frogster -c "TRUNCATE message_deliveries, messages, group_sender_key_distributions, chat_members, chats, active_sessions, one_time_pre_keys, signed_pre_keys, devices, users CASCADE;"
 ```
 
@@ -484,11 +484,11 @@ docker compose -f deploy/docker-compose.yml exec postgres psql -U frogster -d fr
 
 ```powershell
 # Тесты клиента (172 штуки)
-cd d:\VectrixSecurity\Frogster\client
+cd Frogster\client
 flutter test
 
 # Тесты сервера
-cd d:\VectrixSecurity\Frogster\server
+cd Frogster\server
 go test ./... -race
 
 # Сквозные сценарии против запущенного сервера
@@ -506,7 +506,7 @@ python testdata/fanout_test.py       # шифротекст на каждое у
 ```powershell
 # В окнах серверов: Ctrl+C
 
-cd d:\VectrixSecurity\FrogsterMessenger
+cd FrogsterMessenger
 docker compose -f deploy/docker-compose.yml down
 ```
 
@@ -523,17 +523,17 @@ docker compose -f deploy/docker-compose.yml down
 | Что | Где | Зачем удалять |
 |---|---|---|
 | База сообщений | `%APPDATA%\Frogster` | Расшифрованные сообщения и ratchet-сессии |
-| Приватные ключи | `%APPDATA%\com.vectrixsecurity` | Хранилище `flutter_secure_storage`, identity устройства |
+| Приватные ключи | `%APPDATA%\com.` | Хранилище `flutter_secure_storage`, identity устройства |
 | Открытые вложения | `%TEMP%\frogsterXXXXXX` | Каталоги с картинками, которые открывали из чата |
 | Сборка | `client\build` | 3.2 ГБ; и сам `.exe`, если распаковывали отдельно |
 
 ```powershell
 Remove-Item "$env:APPDATA\Frogster" -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item "$env:APPDATA\com.vectrixsecurity" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item "$env:APPDATA\com." -Recurse -Force -ErrorAction SilentlyContinue
 Get-ChildItem $env:TEMP -Directory -Filter "frogster*" | Remove-Item -Recurse -Force
 ```
 
-Обе папки в `%APPDATA%` обязательны. `com.vectrixsecurity` — **не** Windows
+Обе папки в `%APPDATA%` обязательны. `com.` — **не** Windows
 Credential Manager, а файл `flutter_secure_storage.dat`; имя берётся из
 `CompanyName` в `windows/runner/Runner.rc`. Без её удаления старая identity
 переживает «зачистку»: приложение молча продолжит работать со старыми ключами.
@@ -545,8 +545,8 @@ Credential Manager, а файл `flutter_secure_storage.dat`; имя берёт�
 ### На телефоне (Android)
 
 ```powershell
-adb shell pm clear com.vectrixsecurity.frogster   # данные, но приложение остаётся
-adb uninstall com.vectrixsecurity.frogster        # удалить целиком
+adb shell pm clear com..frogster   # данные, но приложение остаётся
+adb uninstall com.frogster        # удалить целиком
 ```
 
 ### На сервере

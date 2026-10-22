@@ -49,6 +49,7 @@ class FakeChat {
   String title = '';
   final Map<String, String> roles = {}; // user id -> role
   final Map<String, int> readSeq = {};
+  final Map<String, int> clearedSeq = {};
   int lastSeq = 0;
   final List<RemoteMessage> rows = [];
 
@@ -142,7 +143,11 @@ class FakeServer {
       lastReadSeq: own,
       peerReadSeq: peers.isEmpty ? 0 : peers.reduce((a, b) => a > b ? a : b),
       unread: chat.rows
-          .where((r) => r.kind.isEmpty && r.seq > own && r.senderId != viewer)
+          .where((r) =>
+              r.kind.isEmpty &&
+              r.seq > own &&
+              r.seq > (chat.clearedSeq[viewer] ?? 0) &&
+              r.senderId != viewer)
           .length,
       members: [
         for (final e in chat.roles.entries)
@@ -225,6 +230,13 @@ class FakeServer {
           });
         }
         from.deliver({'type': 'ack', 'id': id, 'chat_id': chat.id});
+
+      case 'typing':
+        if (chat == null) return;
+        for (final d in memberDevices(chat)) {
+          if (d.id == from.id) continue;
+          d.deliver({'type': 'typing', 'chat_id': chat.id, 'sender': sender});
+        }
 
       case 'read':
         if (chat == null) return;
@@ -437,6 +449,12 @@ class FakeWs extends WsClient {
 class FakeApi extends ApiClient {
   FakeApi(this.device) : super(server: _config);
 
+  @override
+  Future<void> clearChat(String chatId) async {
+    final chat = _server.chats[chatId]!;
+    chat.clearedSeq[_me] = chat.lastSeq;
+  }
+
   final FakeDevice device;
   FakeServer get _server => device.server..touch();
   String get _me => device.user.id;
@@ -484,11 +502,12 @@ class FakeApi extends ApiClient {
     int limit = 50,
   }) async {
     final chat = _server.chats[chatId]!;
+    final floor = chat.clearedSeq[_me] ?? 0;
     if (after != null) {
-      return chat.rows.where((r) => r.seq > after).take(limit).toList();
+      return chat.rows.where((r) => r.seq > after && r.seq > floor).take(limit).toList();
     }
     final rows = chat.rows
-        .where((r) => r.kind.isEmpty && (before == null || r.seq < before))
+        .where((r) => r.kind.isEmpty && r.seq > floor && (before == null || r.seq < before))
         .toList()
         .reversed
         .take(limit)

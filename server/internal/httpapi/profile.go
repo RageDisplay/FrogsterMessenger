@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/vectrixsecurity/frogster/server/internal/auth"
 	"github.com/vectrixsecurity/frogster/server/internal/models"
 	"github.com/vectrixsecurity/frogster/server/internal/store"
 )
@@ -141,4 +142,46 @@ func (s *Server) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 	}
 	user.DisplayName, user.Bio = name, bio
 	writeJSON(w, http.StatusOK, toUserJSON(user), s.log)
+}
+
+type deleteAccountRequest struct {
+	Password string `json:"password"`
+}
+
+// handleDeleteMe closes the caller's account.
+//
+// The password is required even with a valid token, as for a password
+// change: a token lifted from a device must not be enough to destroy the
+// account. Every group the user was in moves to a new epoch and is told.
+func (s *Server) handleDeleteMe(w http.ResponseWriter, r *http.Request) {
+	claims, ok := claimsOrUnauthorized(w, r, s)
+	if !ok {
+		return
+	}
+	var req deleteAccountRequest
+	if err := decodeJSON(w, r, &req, 4<<10); err != nil {
+		writeErr(w, http.StatusBadRequest, "malformed request body", s.log)
+		return
+	}
+	user, err := s.store.UserByID(r.Context(), claims.UserID)
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, "unauthorized", s.log)
+		return
+	}
+	if err := auth.VerifyPassword(user.PasswordHash, req.Password); err != nil {
+		writeErr(w, http.StatusForbidden, "password is incorrect", s.log)
+		return
+	}
+
+	deletion, err := s.store.DeleteAccount(r.Context(), user.ID)
+	if err != nil {
+		s.log.Error("delete account", "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal error", s.log)
+		return
+	}
+	for chatID, epoch := range deletion.Groups {
+		s.notifyMembers(r, chatID, epoch)
+	}
+	s.log.Info("account deleted", "user_id", user.ID, "groups_left", len(deletion.Groups))
+	w.WriteHeader(http.StatusNoContent)
 }

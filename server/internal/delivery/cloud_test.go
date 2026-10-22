@@ -113,7 +113,7 @@ func (g *group) mustCloud(from int, env ws.Envelope) *models.Message {
 
 func (g *group) history() map[string]store.CloudMessage {
 	g.t.Helper()
-	msgs, err := g.st.CloudHistory(context.Background(), g.chat.ID, 0, 100)
+	msgs, err := g.st.CloudHistory(context.Background(), g.chat.ID, 0, 0, 100)
 	if err != nil {
 		g.t.Fatalf("history: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestReactionsAndSync(t *testing.T) {
 	}
 
 	// A device that saw seq 1 replays the events after it, in order.
-	since, err := g.st.CloudSince(context.Background(), g.chat.ID, 1, 100)
+	since, err := g.st.CloudSince(context.Background(), g.chat.ID, 0, 1, 100)
 	if err != nil {
 		t.Fatal(err)
 	}

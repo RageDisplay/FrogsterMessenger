@@ -17,6 +17,9 @@ import '../../../ui/widgets/pond_nav_bar.dart';
 /// Which conversations the list shows.
 enum ChatFilter { all, direct, groups, secret }
 
+/// What a chat row's menu offers.
+enum ChatAction { togglePin, toggleMute, toggleArchive, delete }
+
 class ChatListScreen extends StatefulWidget {
   const ChatListScreen({
     super.key,
@@ -26,8 +29,13 @@ class ChatListScreen extends StatefulWidget {
     this.selectedChatId,
     this.onNewChat,
     this.onOpenSettings,
+    this.onChatAction,
+    this.onOpenArchive,
+    this.onSearch,
+    this.archive = false,
   });
 
+  /// Every chat this device has; the screen picks which to show.
   final List<Chat> chats;
   final void Function(Chat chat) onOpenChat;
   final SocketState connection;
@@ -39,6 +47,18 @@ class ChatListScreen extends StatefulWidget {
   final VoidCallback? onNewChat;
   final VoidCallback? onOpenSettings;
 
+  /// Pin, mute, archive or delete, chosen from a row's menu.
+  final void Function(Chat chat, ChatAction action)? onChatAction;
+
+  /// Opens the archived chats.
+  final VoidCallback? onOpenArchive;
+
+  /// Opens search across chats and messages.
+  final VoidCallback? onSearch;
+
+  /// Shows the archive instead of the main list.
+  final bool archive;
+
   @override
   State<ChatListScreen> createState() => _ChatListScreenState();
 }
@@ -46,35 +66,101 @@ class ChatListScreen extends StatefulWidget {
 class _ChatListScreenState extends State<ChatListScreen> {
   var _filter = ChatFilter.all;
 
-  List<Chat> get _visible => switch (_filter) {
-        ChatFilter.all => widget.chats,
-        ChatFilter.direct => widget.chats.where((c) => !c.isGroup).toList(),
-        ChatFilter.groups => widget.chats.where((c) => c.isGroup).toList(),
-        ChatFilter.secret => widget.chats.where((c) => c.isSecret).toList(),
-      };
+  /// The chats of this list: the archive, or everything not in it.
+  List<Chat> get _listed => widget.chats
+      .where((c) => !c.hidden && c.archived == widget.archive)
+      .toList();
+
+  List<Chat> get _archived =>
+      widget.chats.where((c) => !c.hidden && c.archived).toList();
+
+  List<Chat> get _visible {
+    final listed = _listed;
+    return switch (_filter) {
+      ChatFilter.all => listed,
+      ChatFilter.direct => listed.where((c) => !c.isGroup).toList(),
+      ChatFilter.groups => listed.where((c) => c.isGroup).toList(),
+      ChatFilter.secret => listed.where((c) => c.isSecret).toList(),
+    };
+  }
+
+  Future<void> _showChatMenu(Chat chat) async {
+    final handler = widget.onChatAction;
+    if (handler == null) return;
+    final l10n = AppLocalizations.of(context);
+    final pond = context.pond;
+    final action = await showModalBottomSheet<ChatAction>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(chat.pinned ? Icons.push_pin_outlined : Icons.push_pin_rounded),
+              title: Text(chat.pinned ? l10n.chatUnpin : l10n.chatPin),
+              onTap: () => Navigator.of(sheetContext).pop(ChatAction.togglePin),
+            ),
+            ListTile(
+              leading: Icon(chat.muted
+                  ? Icons.notifications_active_outlined
+                  : Icons.notifications_off_outlined),
+              title: Text(chat.muted ? l10n.chatUnmute : l10n.chatMute),
+              onTap: () => Navigator.of(sheetContext).pop(ChatAction.toggleMute),
+            ),
+            ListTile(
+              leading: Icon(chat.archived ? Icons.unarchive_outlined : Icons.archive_outlined),
+              title: Text(chat.archived ? l10n.chatUnarchive : l10n.chatArchive),
+              onTap: () => Navigator.of(sheetContext).pop(ChatAction.toggleArchive),
+            ),
+            ListTile(
+              leading: Icon(
+                chat.isGroup ? Icons.logout_rounded : Icons.delete_outline_rounded,
+                color: pond.danger,
+              ),
+              title: Text(
+                chat.isGroup ? l10n.leaveGroup : l10n.deleteChat,
+                style: TextStyle(color: pond.danger),
+              ),
+              onTap: () => Navigator.of(sheetContext).pop(ChatAction.delete),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (action != null) handler(chat, action);
+  }
 
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
     final visible = _visible;
+    final listed = _listed;
+    final archived = widget.archive ? const <Chat>[] : _archived;
 
     return Scaffold(
+      appBar: widget.archive
+          ? AppBar(
+              title: Text(l10n.archiveTitle, style: const TextStyle(fontWeight: FontWeight.w800)),
+            )
+          : null,
       body: SafeArea(
         bottom: false,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _Header(connection: widget.connection),
-            if (widget.chats.isNotEmpty)
+            if (!widget.archive) _Header(connection: widget.connection, onSearch: widget.onSearch),
+            if (listed.isNotEmpty)
               _Filters(
                 selected: _filter,
                 onSelected: (f) => setState(() => _filter = f),
               ),
+            if (archived.isNotEmpty)
+              _ArchiveRow(count: archived.length, onTap: widget.onOpenArchive),
             Expanded(
-              child: widget.chats.isEmpty
+              child: listed.isEmpty
                   ? _EmptyState(
-                      title: l10n.emptyChatsTitle,
-                      body: l10n.emptyChatsBody,
+                      title: widget.archive ? l10n.filterEmpty : l10n.emptyChatsTitle,
+                      body: widget.archive ? null : l10n.emptyChatsBody,
                     )
                   : visible.isEmpty
                       ? _EmptyState(title: l10n.filterEmpty)
@@ -82,23 +168,27 @@ class _ChatListScreenState extends State<ChatListScreen> {
                           chats: visible,
                           selectedChatId: widget.selectedChatId,
                           onOpenChat: widget.onOpenChat,
+                          onLongPress: _showChatMenu,
                         ),
             ),
           ],
         ),
       ),
-      bottomNavigationBar: PondNavBar(
-        onNewChat: widget.onNewChat,
-        onOpenSettings: widget.onOpenSettings,
-      ),
+      bottomNavigationBar: widget.archive
+          ? null
+          : PondNavBar(
+              onNewChat: widget.onNewChat,
+              onOpenSettings: widget.onOpenSettings,
+            ),
     );
   }
 }
 
 class _Header extends StatelessWidget {
-  const _Header({required this.connection});
+  const _Header({required this.connection, this.onSearch});
 
   final SocketState connection;
+  final VoidCallback? onSearch;
 
   @override
   Widget build(BuildContext context) {
@@ -120,6 +210,14 @@ class _Header extends StatelessWidget {
             ),
           ),
           ConnectionChip(state: connection),
+          if (onSearch != null) ...[
+            const SizedBox(width: 4),
+            IconButton(
+              tooltip: l10n.search,
+              onPressed: onSearch,
+              icon: const Icon(Icons.search_rounded),
+            ),
+          ],
         ],
       ),
     );
@@ -241,16 +339,56 @@ class _Filters extends StatelessWidget {
 }
 
 /// All conversations on one card, separated by hairlines.
+/// The way into the archive, above the list.
+class _ArchiveRow extends StatelessWidget {
+  const _ArchiveRow({required this.count, this.onTap});
+
+  final int count;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final pond = context.pond;
+    final l10n = AppLocalizations.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      child: Material(
+        color: pond.lily,
+        borderRadius: BorderRadius.circular(PondRadii.control),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(PondRadii.control),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            child: Row(
+              children: [
+                Icon(Icons.archive_outlined, size: 20, color: pond.inkMuted),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(l10n.archiveTitle, style: const TextStyle(fontWeight: FontWeight.w700)),
+                ),
+                Text('$count', style: TextStyle(color: pond.inkMuted, fontWeight: FontWeight.w600)),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ChatBlock extends StatelessWidget {
   const _ChatBlock({
     required this.chats,
     required this.selectedChatId,
     required this.onOpenChat,
+    this.onLongPress,
   });
 
   final List<Chat> chats;
   final String? selectedChatId;
   final void Function(Chat chat) onOpenChat;
+  final void Function(Chat chat)? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -276,6 +414,7 @@ class _ChatBlock extends StatelessWidget {
                 chat: chat,
                 selected: chat.id == selectedChatId,
                 onTap: () => onOpenChat(chat),
+                onLongPress: onLongPress == null ? null : () => onLongPress!(chat),
               );
             },
           ),
@@ -290,11 +429,13 @@ class _ChatRow extends StatelessWidget {
     required this.chat,
     required this.selected,
     required this.onTap,
+    this.onLongPress,
   });
 
   final Chat chat;
   final bool selected;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -311,6 +452,8 @@ class _ChatRow extends StatelessWidget {
       color: selected ? pond.accentSoft : Colors.transparent,
       child: InkWell(
         onTap: onTap,
+        onLongPress: onLongPress,
+        onSecondaryTap: onLongPress,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           child: Row(
@@ -344,6 +487,10 @@ class _ChatRow extends StatelessWidget {
                             ),
                           ),
                         ),
+                        if (chat.muted) ...[
+                          Icon(Icons.notifications_off_outlined, size: 14, color: pond.inkMuted),
+                          const SizedBox(width: 4),
+                        ],
                         if (chat.lastMessageAt != null)
                           Text(
                             formatListStamp(context, chat.lastMessageAt!),
@@ -360,19 +507,35 @@ class _ChatRow extends StatelessWidget {
                     Row(
                       children: [
                         Expanded(
-                          child: Text(
-                            preview,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 14,
-                              color: hasUnread ? pond.ink : pond.inkMuted,
-                            ),
-                          ),
+                          child: chat.draft.trim().isNotEmpty
+                              ? Text.rich(
+                                  TextSpan(children: [
+                                    TextSpan(
+                                      text: '${l10n.draftPrefix} ',
+                                      style: TextStyle(color: pond.danger, fontWeight: FontWeight.w600),
+                                    ),
+                                    TextSpan(text: chat.draft.trim().replaceAll('\n', ' ')),
+                                  ]),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(fontSize: 14, color: pond.inkMuted),
+                                )
+                              : Text(
+                                  preview,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: hasUnread ? pond.ink : pond.inkMuted,
+                                  ),
+                                ),
                         ),
                         if (hasUnread) ...[
                           const SizedBox(width: 8),
-                          _UnreadBadge(count: chat.unreadCount),
+                          _UnreadBadge(count: chat.unreadCount, muted: chat.muted),
+                        ] else if (chat.pinned) ...[
+                          const SizedBox(width: 8),
+                          Icon(Icons.push_pin_rounded, size: 15, color: pond.inkMuted),
                         ],
                       ],
                     ),
@@ -388,9 +551,12 @@ class _ChatRow extends StatelessWidget {
 }
 
 class _UnreadBadge extends StatelessWidget {
-  const _UnreadBadge({required this.count});
+  const _UnreadBadge({required this.count, this.muted = false});
 
   final int count;
+
+  /// A muted chat's badge is grey: still counted, not calling for attention.
+  final bool muted;
 
   @override
   Widget build(BuildContext context) {
@@ -400,14 +566,14 @@ class _UnreadBadge extends StatelessWidget {
       height: 20,
       padding: const EdgeInsets.symmetric(horizontal: 6),
       decoration: BoxDecoration(
-        color: pond.accent,
+        color: muted ? pond.inkMuted : pond.accent,
         borderRadius: BorderRadius.circular(10),
       ),
       alignment: Alignment.center,
       child: Text(
         count > 99 ? '99+' : '$count',
         style: TextStyle(
-          color: pond.onAccent,
+          color: muted ? pond.pond : pond.onAccent,
           fontSize: 11,
           fontWeight: FontWeight.w700,
         ),

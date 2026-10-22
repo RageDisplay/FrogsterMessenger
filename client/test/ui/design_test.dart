@@ -5,6 +5,7 @@ import 'package:frogster/data/local/preferences.dart';
 import 'package:frogster/data/models/models.dart';
 import 'package:frogster/data/remote/ws_client.dart';
 import 'package:frogster/features/auth/view/login_screen.dart';
+import 'package:frogster/features/chat/widgets/message_bubble.dart';
 import 'package:frogster/features/chat_list/view/chat_list_screen.dart';
 import 'package:frogster/l10n/app_localizations.dart';
 import 'package:frogster/ui/theme/app_theme.dart';
@@ -113,6 +114,90 @@ void main() {
       expect(find.text('Войти'), findsOneWidget);
       expect(find.text('Сервер'), findsOneWidget);
     });
+  });
+
+  group('list arrangement', () {
+    const chats = [
+      Chat(id: 'a', type: 'direct', epoch: 0, peerUsername: 'anya', draft: 'привет, как'),
+      Chat(id: 'b', type: 'direct', epoch: 0, peerUsername: 'boris', archived: true),
+      Chat(id: 'c', type: 'direct', epoch: 0, peerUsername: 'clara', hidden: true),
+    ];
+
+    testWidgets('archived and deleted chats stay out of the main list', (tester) async {
+      var openedArchive = false;
+      await tester.pumpWidget(localized(ChatListScreen(
+        chats: chats,
+        connection: SocketState.connected,
+        onOpenChat: (_) {},
+        onOpenArchive: () => openedArchive = true,
+      )));
+      expect(find.text('anya'), findsOneWidget);
+      expect(find.text('boris'), findsNothing);
+      expect(find.text('clara'), findsNothing);
+
+      await tester.tap(find.text('Архив'));
+      expect(openedArchive, isTrue);
+    });
+
+    testWidgets('the archive shows only archived chats', (tester) async {
+      await tester.pumpWidget(localized(ChatListScreen(
+        chats: chats,
+        archive: true,
+        connection: SocketState.connected,
+        onOpenChat: (_) {},
+      )));
+      expect(find.text('boris'), findsOneWidget);
+      expect(find.text('anya'), findsNothing);
+    });
+
+    testWidgets('a draft shows instead of the last message', (tester) async {
+      await tester.pumpWidget(localized(ChatListScreen(
+        chats: chats,
+        connection: SocketState.connected,
+        onOpenChat: (_) {},
+      )));
+      expect(find.textContaining('Черновик:', findRichText: true), findsOneWidget);
+      expect(find.textContaining('привет, как', findRichText: true), findsOneWidget);
+    });
+
+    testWidgets('a long press offers the row menu', (tester) async {
+      (Chat, ChatAction)? chosen;
+      await tester.pumpWidget(localized(ChatListScreen(
+        chats: chats,
+        connection: SocketState.connected,
+        onOpenChat: (_) {},
+        onChatAction: (chat, action) => chosen = (chat, action),
+      )));
+      await tester.longPress(find.text('anya'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Закрепить'));
+      await tester.pumpAndSettle();
+      expect(chosen?.$2, ChatAction.togglePin);
+      expect(chosen?.$1.id, 'a');
+    });
+  });
+
+  testWidgets('a reply quotes what it answers', (tester) async {
+    await tester.pumpWidget(localized(Scaffold(
+      body: MessageBubble(
+        message: Message(
+          id: 'm',
+          chatId: 'c',
+          senderId: 'u',
+          senderDeviceId: 'd',
+          body: 'да, в шесть',
+          sentAt: DateTime(2026),
+          isOutgoing: false,
+          replyToId: 'q',
+          forwardedFrom: 'Аня',
+        ),
+        quote: (author: 'Вы', text: 'встречаемся?'),
+        onReact: (_, _) {},
+      ),
+    )));
+    expect(find.text('Вы'), findsOneWidget);
+    expect(find.text('встречаемся?'), findsOneWidget);
+    expect(find.text('Переслано от Аня'), findsOneWidget);
   });
 
   testWidgets('the chat list renders in the dark theme', (tester) async {

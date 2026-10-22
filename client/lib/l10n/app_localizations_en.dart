@@ -554,4 +554,187 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get secretGroupNameNote =>
       'The name is sent end to end: the server never sees it.';
+
+  @override
+  String get actionReply => 'Reply';
+
+  @override
+  String get actionForward => 'Forward';
+
+  @override
+  String get forwardTo => 'Forward to';
+
+  @override
+  String forwardedFrom(String name) {
+    return 'Forwarded from $name';
+  }
+
+  @override
+  String forwardedDone(String chat) {
+    return 'Forwarded to $chat';
+  }
+
+  @override
+  String replyingTo(String name) {
+    return 'Reply to $name';
+  }
+
+  @override
+  String get replyUnknown => 'Message';
+
+  @override
+  String get you => 'You';
+
+  @override
+  String get typing => 'typing…';
+
+  @override
+  String typingNamed(String name) {
+    return '$name is typing…';
+  }
+
+  @override
+  String get typingSeveral => 'several people are typing…';
+
+  @override
+  String get draftPrefix => 'Draft:';
+
+  @override
+  String get unreadDivider => 'Unread messages';
+
+  @override
+  String get chatPin => 'Pin';
+
+  @override
+  String get chatUnpin => 'Unpin';
+
+  @override
+  String get chatMute => 'Mute';
+
+  @override
+  String get chatUnmute => 'Unmute';
+
+  @override
+  String get chatArchive => 'Archive';
+
+  @override
+  String get chatUnarchive => 'Unarchive';
+
+  @override
+  String get archiveTitle => 'Archive';
+
+  @override
+  String get deleteChat => 'Delete chat';
+
+  @override
+  String get deleteChatTitle => 'Delete this chat?';
+
+  @override
+  String get deleteChatBody =>
+      'Its history is removed from all your devices. The other side keeps theirs.';
+
+  @override
+  String get deleteSecretChatBody =>
+      'Its history is removed from this device. The other side keeps theirs.';
+
+  @override
+  String get editProfile => 'Edit profile';
+
+  @override
+  String get displayNameLabel => 'Name';
+
+  @override
+  String get displayNameHint => 'How contacts see you';
+
+  @override
+  String get bioLabel => 'About';
+
+  @override
+  String get profileSaved => 'Profile saved';
+
+  @override
+  String get currentPassword => 'Current password';
+
+  @override
+  String get newPassword => 'New password';
+
+  @override
+  String get repeatPassword => 'Repeat the new password';
+
+  @override
+  String get passwordsDiffer => 'The passwords do not match';
+
+  @override
+  String get passwordWrong => 'The current password is wrong';
+
+  @override
+  String get passwordChanged =>
+      'Password changed. Your other devices were signed out.';
+
+  @override
+  String get deleteAccount => 'Delete account';
+
+  @override
+  String get deleteAccountHint => 'For good: devices, keys and name';
+
+  @override
+  String get deleteAccountTitle => 'Delete your account?';
+
+  @override
+  String get deleteAccountBody =>
+      'All your devices are signed out and their keys erased, you leave every group, and your username becomes free. Messages you sent stay with the people who received them. This cannot be undone.';
+
+  @override
+  String get deleteAccountConfirm => 'Delete for good';
+
+  @override
+  String get about => 'About';
+
+  @override
+  String appVersion(String version) {
+    return 'Version $version';
+  }
+
+  @override
+  String get licenses => 'Open-source licenses';
+
+  @override
+  String get deletedAccount => 'Deleted account';
+
+  @override
+  String get search => 'Search';
+
+  @override
+  String get searchHint => 'Chats and messages';
+
+  @override
+  String get searchMessages => 'Messages';
+
+  @override
+  String get searchNothing => 'Nothing found';
+
+  @override
+  String get notifications => 'Notifications';
+
+  @override
+  String get notificationsShow => 'Show notifications';
+
+  @override
+  String get notificationsPreview => 'Show message text';
+
+  @override
+  String get notificationsPreviewHint =>
+      'Off: only \"New message\", without a name or words';
+
+  @override
+  String get notifyNewMessage => 'New message';
+
+  @override
+  String get notifyVoice => 'Voice message';
+
+  @override
+  String get trayOpen => 'Open Frogster';
+
+  @override
+  String get trayQuit => 'Quit';
 }

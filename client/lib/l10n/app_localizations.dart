@@ -1069,6 +1069,342 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'The name is sent end to end: the server never sees it.'**
   String get secretGroupNameNote;
+
+  /// No description provided for @actionReply.
+  ///
+  /// In en, this message translates to:
+  /// **'Reply'**
+  String get actionReply;
+
+  /// No description provided for @actionForward.
+  ///
+  /// In en, this message translates to:
+  /// **'Forward'**
+  String get actionForward;
+
+  /// No description provided for @forwardTo.
+  ///
+  /// In en, this message translates to:
+  /// **'Forward to'**
+  String get forwardTo;
+
+  /// No description provided for @forwardedFrom.
+  ///
+  /// In en, this message translates to:
+  /// **'Forwarded from {name}'**
+  String forwardedFrom(String name);
+
+  /// No description provided for @forwardedDone.
+  ///
+  /// In en, this message translates to:
+  /// **'Forwarded to {chat}'**
+  String forwardedDone(String chat);
+
+  /// No description provided for @replyingTo.
+  ///
+  /// In en, this message translates to:
+  /// **'Reply to {name}'**
+  String replyingTo(String name);
+
+  /// No description provided for @replyUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Message'**
+  String get replyUnknown;
+
+  /// No description provided for @you.
+  ///
+  /// In en, this message translates to:
+  /// **'You'**
+  String get you;
+
+  /// No description provided for @typing.
+  ///
+  /// In en, this message translates to:
+  /// **'typing…'**
+  String get typing;
+
+  /// No description provided for @typingNamed.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} is typing…'**
+  String typingNamed(String name);
+
+  /// No description provided for @typingSeveral.
+  ///
+  /// In en, this message translates to:
+  /// **'several people are typing…'**
+  String get typingSeveral;
+
+  /// No description provided for @draftPrefix.
+  ///
+  /// In en, this message translates to:
+  /// **'Draft:'**
+  String get draftPrefix;
+
+  /// No description provided for @unreadDivider.
+  ///
+  /// In en, this message translates to:
+  /// **'Unread messages'**
+  String get unreadDivider;
+
+  /// No description provided for @chatPin.
+  ///
+  /// In en, this message translates to:
+  /// **'Pin'**
+  String get chatPin;
+
+  /// No description provided for @chatUnpin.
+  ///
+  /// In en, this message translates to:
+  /// **'Unpin'**
+  String get chatUnpin;
+
+  /// No description provided for @chatMute.
+  ///
+  /// In en, this message translates to:
+  /// **'Mute'**
+  String get chatMute;
+
+  /// No description provided for @chatUnmute.
+  ///
+  /// In en, this message translates to:
+  /// **'Unmute'**
+  String get chatUnmute;
+
+  /// No description provided for @chatArchive.
+  ///
+  /// In en, this message translates to:
+  /// **'Archive'**
+  String get chatArchive;
+
+  /// No description provided for @chatUnarchive.
+  ///
+  /// In en, this message translates to:
+  /// **'Unarchive'**
+  String get chatUnarchive;
+
+  /// No description provided for @archiveTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Archive'**
+  String get archiveTitle;
+
+  /// No description provided for @deleteChat.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete chat'**
+  String get deleteChat;
+
+  /// No description provided for @deleteChatTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete this chat?'**
+  String get deleteChatTitle;
+
+  /// No description provided for @deleteChatBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Its history is removed from all your devices. The other side keeps theirs.'**
+  String get deleteChatBody;
+
+  /// No description provided for @deleteSecretChatBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Its history is removed from this device. The other side keeps theirs.'**
+  String get deleteSecretChatBody;
+
+  /// No description provided for @editProfile.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit profile'**
+  String get editProfile;
+
+  /// No description provided for @displayNameLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Name'**
+  String get displayNameLabel;
+
+  /// No description provided for @displayNameHint.
+  ///
+  /// In en, this message translates to:
+  /// **'How contacts see you'**
+  String get displayNameHint;
+
+  /// No description provided for @bioLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'About'**
+  String get bioLabel;
+
+  /// No description provided for @profileSaved.
+  ///
+  /// In en, this message translates to:
+  /// **'Profile saved'**
+  String get profileSaved;
+
+  /// No description provided for @currentPassword.
+  ///
+  /// In en, this message translates to:
+  /// **'Current password'**
+  String get currentPassword;
+
+  /// No description provided for @newPassword.
+  ///
+  /// In en, this message translates to:
+  /// **'New password'**
+  String get newPassword;
+
+  /// No description provided for @repeatPassword.
+  ///
+  /// In en, this message translates to:
+  /// **'Repeat the new password'**
+  String get repeatPassword;
+
+  /// No description provided for @passwordsDiffer.
+  ///
+  /// In en, this message translates to:
+  /// **'The passwords do not match'**
+  String get passwordsDiffer;
+
+  /// No description provided for @passwordWrong.
+  ///
+  /// In en, this message translates to:
+  /// **'The current password is wrong'**
+  String get passwordWrong;
+
+  /// No description provided for @passwordChanged.
+  ///
+  /// In en, this message translates to:
+  /// **'Password changed. Your other devices were signed out.'**
+  String get passwordChanged;
+
+  /// No description provided for @deleteAccount.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete account'**
+  String get deleteAccount;
+
+  /// No description provided for @deleteAccountHint.
+  ///
+  /// In en, this message translates to:
+  /// **'For good: devices, keys and name'**
+  String get deleteAccountHint;
+
+  /// No description provided for @deleteAccountTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete your account?'**
+  String get deleteAccountTitle;
+
+  /// No description provided for @deleteAccountBody.
+  ///
+  /// In en, this message translates to:
+  /// **'All your devices are signed out and their keys erased, you leave every group, and your username becomes free. Messages you sent stay with the people who received them. This cannot be undone.'**
+  String get deleteAccountBody;
+
+  /// No description provided for @deleteAccountConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete for good'**
+  String get deleteAccountConfirm;
+
+  /// No description provided for @about.
+  ///
+  /// In en, this message translates to:
+  /// **'About'**
+  String get about;
+
+  /// No description provided for @appVersion.
+  ///
+  /// In en, this message translates to:
+  /// **'Version {version}'**
+  String appVersion(String version);
+
+  /// No description provided for @licenses.
+  ///
+  /// In en, this message translates to:
+  /// **'Open-source licenses'**
+  String get licenses;
+
+  /// No description provided for @deletedAccount.
+  ///
+  /// In en, this message translates to:
+  /// **'Deleted account'**
+  String get deletedAccount;
+
+  /// No description provided for @search.
+  ///
+  /// In en, this message translates to:
+  /// **'Search'**
+  String get search;
+
+  /// No description provided for @searchHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Chats and messages'**
+  String get searchHint;
+
+  /// No description provided for @searchMessages.
+  ///
+  /// In en, this message translates to:
+  /// **'Messages'**
+  String get searchMessages;
+
+  /// No description provided for @searchNothing.
+  ///
+  /// In en, this message translates to:
+  /// **'Nothing found'**
+  String get searchNothing;
+
+  /// No description provided for @notifications.
+  ///
+  /// In en, this message translates to:
+  /// **'Notifications'**
+  String get notifications;
+
+  /// No description provided for @notificationsShow.
+  ///
+  /// In en, this message translates to:
+  /// **'Show notifications'**
+  String get notificationsShow;
+
+  /// No description provided for @notificationsPreview.
+  ///
+  /// In en, this message translates to:
+  /// **'Show message text'**
+  String get notificationsPreview;
+
+  /// No description provided for @notificationsPreviewHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Off: only \"New message\", without a name or words'**
+  String get notificationsPreviewHint;
+
+  /// No description provided for @notifyNewMessage.
+  ///
+  /// In en, this message translates to:
+  /// **'New message'**
+  String get notifyNewMessage;
+
+  /// No description provided for @notifyVoice.
+  ///
+  /// In en, this message translates to:
+  /// **'Voice message'**
+  String get notifyVoice;
+
+  /// No description provided for @trayOpen.
+  ///
+  /// In en, this message translates to:
+  /// **'Open Frogster'**
+  String get trayOpen;
+
+  /// No description provided for @trayQuit.
+  ///
+  /// In en, this message translates to:
+  /// **'Quit'**
+  String get trayQuit;
 }
 
 class _AppLocalizationsDelegate

@@ -1,4 +1,4 @@
-/// Interface preferences: theme and language.
+/// Interface preferences: theme, language and notifications.
 library;
 
 import 'package:flutter/material.dart';
@@ -7,6 +7,8 @@ import 'account_store.dart';
 
 const String _kTheme = 'frogster.pref.theme';
 const String _kLocale = 'frogster.pref.locale';
+const String _kNotify = 'frogster.pref.notify';
+const String _kNotifyPreview = 'frogster.pref.notify_preview';
 
 /// Languages the interface is translated into.
 const List<Locale> supportedLocales = [Locale('ru'), Locale('en')];
@@ -22,8 +24,15 @@ class AppPreferences extends ChangeNotifier {
   /// Null follows the system language.
   Locale? _locale;
 
+  bool _notifications = true;
+  bool _notificationPreview = true;
+
   ThemeMode get themeMode => _themeMode;
   Locale? get locale => _locale;
+  bool get notifications => _notifications;
+
+  /// Whether a notification shows who wrote and what.
+  bool get notificationPreview => _notificationPreview;
 
   Future<void> load() async {
     _themeMode = switch (await _values.read(_kTheme)) {
@@ -35,6 +44,8 @@ class AppPreferences extends ChangeNotifier {
     _locale = supportedLocales
         .where((l) => l.languageCode == code)
         .firstOrNull;
+    _notifications = await _values.read(_kNotify) != 'off';
+    _notificationPreview = await _values.read(_kNotifyPreview) != 'off';
     notifyListeners();
   }
 
@@ -43,6 +54,18 @@ class AppPreferences extends ChangeNotifier {
     _themeMode = mode;
     notifyListeners();
     await _values.write(_kTheme, mode.name);
+  }
+
+  Future<void> setNotifications(bool on) async {
+    _notifications = on;
+    notifyListeners();
+    await _values.write(_kNotify, on ? 'on' : 'off');
+  }
+
+  Future<void> setNotificationPreview(bool on) async {
+    _notificationPreview = on;
+    notifyListeners();
+    await _values.write(_kNotifyPreview, on ? 'on' : 'off');
   }
 
   Future<void> setLocale(Locale? locale) async {

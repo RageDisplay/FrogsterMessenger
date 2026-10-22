@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "com.vectrixsecurity" "\0"
-            VALUE "FileDescription", "frogster" "\0"
+            VALUE "FileDescription", "Frogster" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "frogster" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 com.vectrixsecurity. All rights reserved." "\0"
             VALUE "OriginalFilename", "frogster.exe" "\0"
-            VALUE "ProductName", "frogster" "\0"
+            VALUE "ProductName", "Frogster" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

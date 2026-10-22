@@ -17,9 +17,10 @@ import (
 type ChatSummary struct {
 	models.Chat
 
-	// Role and LastReadSeq are the requesting user's.
+	// Role, LastReadSeq and ClearedSeq are the requesting user's.
 	Role        string
 	LastReadSeq int64
+	ClearedSeq  int64
 
 	// LastSeq is the newest seq in the chat, events included.
 	LastSeq int64
@@ -53,17 +54,19 @@ type summaryRow struct {
 	models.Chat
 	Role        string
 	LastReadSeq int64
+	ClearedSeq  int64
 	LastSeq     int64
 	Unread      int64
 	PeerReadSeq int64
 }
 
 const summarySelect = `
-SELECT c.*, me.role, me.last_read_seq,
+SELECT c.*, me.role, me.last_read_seq, me.cleared_seq,
        COALESCE((SELECT MAX(m.seq) FROM messages m WHERE m.chat_id = c.id), 0) AS last_seq,
        (SELECT COUNT(*) FROM messages m
          WHERE m.chat_id = c.id AND m.kind = '' AND m.deleted_at IS NULL
-           AND m.seq > me.last_read_seq AND m.sender_id <> me.user_id) AS unread,
+           AND m.seq > GREATEST(me.last_read_seq, me.cleared_seq)
+           AND m.sender_id <> me.user_id) AS unread,
        COALESCE((SELECT MAX(o.last_read_seq) FROM chat_members o
          WHERE o.chat_id = c.id AND o.user_id <> me.user_id AND o.left_at IS NULL), 0) AS peer_read_seq
   FROM chats c
@@ -78,7 +81,7 @@ func (s *Store) ChatsForUser(ctx context.Context, userID uuid.UUID) ([]ChatSumma
 		Scan(&rows).Error; err != nil {
 		return nil, fmt.Errorf("chats for user: %w", err)
 	}
-	return s.completeSummaries(ctx, rows)
+	return s.completeSummaries(ctx, userID, rows)
 }
 
 // ChatSummaryFor returns one chat as the given member sees it, or
@@ -93,14 +96,14 @@ func (s *Store) ChatSummaryFor(ctx context.Context, chatID, userID uuid.UUID) (*
 	if len(rows) == 0 {
 		return nil, ErrNotFound
 	}
-	out, err := s.completeSummaries(ctx, rows)
+	out, err := s.completeSummaries(ctx, userID, rows)
 	if err != nil {
 		return nil, err
 	}
 	return &out[0], nil
 }
 
-func (s *Store) completeSummaries(ctx context.Context, rows []summaryRow) ([]ChatSummary, error) {
+func (s *Store) completeSummaries(ctx context.Context, viewer uuid.UUID, rows []summaryRow) ([]ChatSummary, error) {
 	if len(rows) == 0 {
 		return []ChatSummary{}, nil
 	}
@@ -122,9 +125,11 @@ func (s *Store) completeSummaries(ctx context.Context, rows []summaryRow) ([]Cha
 	if len(cloudIDs) > 0 {
 		var msgs []models.Message
 		if err := s.db.WithContext(ctx).Raw(`
-			SELECT DISTINCT ON (chat_id) * FROM messages
-			 WHERE chat_id IN ? AND kind = '' AND deleted_at IS NULL
-			 ORDER BY chat_id, seq DESC`, cloudIDs).Scan(&msgs).Error; err != nil {
+			SELECT DISTINCT ON (m.chat_id) m.* FROM messages m
+			  JOIN chat_members cm ON cm.chat_id = m.chat_id AND cm.user_id = ?
+			 WHERE m.chat_id IN ? AND m.kind = '' AND m.deleted_at IS NULL
+			   AND m.seq > cm.cleared_seq
+			 ORDER BY m.chat_id, m.seq DESC`, viewer, cloudIDs).Scan(&msgs).Error; err != nil {
 			return nil, fmt.Errorf("last messages: %w", err)
 		}
 		opened, err := s.openCloud(msgs)
@@ -142,6 +147,7 @@ func (s *Store) completeSummaries(ctx context.Context, rows []summaryRow) ([]Cha
 			Chat:        r.Chat,
 			Role:        r.Role,
 			LastReadSeq: r.LastReadSeq,
+			ClearedSeq:  r.ClearedSeq,
 			LastSeq:     r.LastSeq,
 			Unread:      r.Unread,
 			PeerReadSeq: r.PeerReadSeq,
@@ -185,6 +191,33 @@ func (s *Store) MarkRead(ctx context.Context, chatID, userID uuid.UUID, seq int6
 		RETURNING last_read_seq`, seq, chatID, chatID, userID).Scan(&pos).Error
 	if err != nil {
 		return 0, fmt.Errorf("mark read: %w", err)
+	}
+	return pos, nil
+}
+
+// ClearHistory hides everything currently in a chat from one member, and
+// returns the seq it was cleared up to.
+func (s *Store) ClearHistory(ctx context.Context, chatID, userID uuid.UUID) (int64, error) {
+	var pos int64
+	err := s.db.WithContext(ctx).Raw(`
+		UPDATE chat_members
+		   SET cleared_seq = COALESCE((SELECT MAX(seq) FROM messages WHERE chat_id = ?), 0)
+		 WHERE chat_id = ? AND user_id = ? AND left_at IS NULL
+		RETURNING cleared_seq`, chatID, chatID, userID).Scan(&pos).Error
+	if err != nil {
+		return 0, fmt.Errorf("clear history: %w", err)
+	}
+	return pos, nil
+}
+
+// ClearedSeq is where a member last cleared a chat, 0 if never.
+func (s *Store) ClearedSeq(ctx context.Context, chatID, userID uuid.UUID) (int64, error) {
+	var pos int64
+	err := s.db.WithContext(ctx).Model(&models.ChatMember{}).
+		Where("chat_id = ? AND user_id = ?", chatID, userID).
+		Select("cleared_seq").Scan(&pos).Error
+	if err != nil {
+		return 0, fmt.Errorf("cleared seq: %w", err)
 	}
 	return pos, nil
 }

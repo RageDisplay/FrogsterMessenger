@@ -55,31 +55,14 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
   Future<void> _rename() async {
     final l10n = AppLocalizations.of(context);
-    final controller = TextEditingController(text: _chat.title ?? '');
     final title = await showDialog<String>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(l10n.rename),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          maxLength: 64,
-          decoration: InputDecoration(labelText: l10n.groupNameLabel),
-          onSubmitted: (v) => Navigator.of(dialogContext).pop(v.trim()),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: Text(l10n.cancel),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(controller.text.trim()),
-            child: Text(l10n.save),
-          ),
-        ],
+      builder: (_) => _RenameDialog(
+        title: l10n.rename,
+        label: l10n.groupNameLabel,
+        initial: _chat.title ?? '',
       ),
     );
-    controller.dispose();
     if (title == null || title.isEmpty || title == _chat.title) return;
     await _run(() => widget.onRename(title));
   }
@@ -267,6 +250,54 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// One text field and a save button. Owns its controller, so the field
+/// outlives nothing it depends on while the dialog animates away.
+class _RenameDialog extends StatefulWidget {
+  const _RenameDialog({required this.title, required this.label, required this.initial});
+
+  final String title;
+  final String label;
+  final String initial;
+
+  @override
+  State<_RenameDialog> createState() => _RenameDialogState();
+}
+
+class _RenameDialogState extends State<_RenameDialog> {
+  late final _controller = TextEditingController(text: widget.initial);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    return AlertDialog(
+      title: Text(widget.title),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        maxLength: 64,
+        decoration: InputDecoration(labelText: widget.label),
+        onSubmitted: (v) => Navigator.of(context).pop(v.trim()),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(l10n.cancel),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(_controller.text.trim()),
+          child: Text(l10n.save),
+        ),
+      ],
     );
   }
 }

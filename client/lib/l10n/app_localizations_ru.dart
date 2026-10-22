@@ -558,4 +558,187 @@ class AppLocalizationsRu extends AppLocalizations {
   @override
   String get secretGroupNameNote =>
       'Название передаётся со сквозным шифрованием — сервер его не видит.';
+
+  @override
+  String get actionReply => 'Ответить';
+
+  @override
+  String get actionForward => 'Переслать';
+
+  @override
+  String get forwardTo => 'Переслать в';
+
+  @override
+  String forwardedFrom(String name) {
+    return 'Переслано от $name';
+  }
+
+  @override
+  String forwardedDone(String chat) {
+    return 'Переслано в «$chat»';
+  }
+
+  @override
+  String replyingTo(String name) {
+    return 'Ответ $name';
+  }
+
+  @override
+  String get replyUnknown => 'Сообщение';
+
+  @override
+  String get you => 'Вы';
+
+  @override
+  String get typing => 'печатает…';
+
+  @override
+  String typingNamed(String name) {
+    return '$name печатает…';
+  }
+
+  @override
+  String get typingSeveral => 'несколько человек печатают…';
+
+  @override
+  String get draftPrefix => 'Черновик:';
+
+  @override
+  String get unreadDivider => 'Непрочитанные сообщения';
+
+  @override
+  String get chatPin => 'Закрепить';
+
+  @override
+  String get chatUnpin => 'Открепить';
+
+  @override
+  String get chatMute => 'Без звука';
+
+  @override
+  String get chatUnmute => 'Включить звук';
+
+  @override
+  String get chatArchive => 'В архив';
+
+  @override
+  String get chatUnarchive => 'Из архива';
+
+  @override
+  String get archiveTitle => 'Архив';
+
+  @override
+  String get deleteChat => 'Удалить чат';
+
+  @override
+  String get deleteChatTitle => 'Удалить чат?';
+
+  @override
+  String get deleteChatBody =>
+      'История удалится со всех ваших устройств. У собеседника она останется.';
+
+  @override
+  String get deleteSecretChatBody =>
+      'История удалится с этого устройства. У собеседника она останется.';
+
+  @override
+  String get editProfile => 'Изменить профиль';
+
+  @override
+  String get displayNameLabel => 'Имя';
+
+  @override
+  String get displayNameHint => 'Как вас видят собеседники';
+
+  @override
+  String get bioLabel => 'О себе';
+
+  @override
+  String get profileSaved => 'Профиль сохранён';
+
+  @override
+  String get currentPassword => 'Текущий пароль';
+
+  @override
+  String get newPassword => 'Новый пароль';
+
+  @override
+  String get repeatPassword => 'Повторите новый пароль';
+
+  @override
+  String get passwordsDiffer => 'Пароли не совпадают';
+
+  @override
+  String get passwordWrong => 'Текущий пароль неверный';
+
+  @override
+  String get passwordChanged =>
+      'Пароль изменён. Остальные устройства вышли из аккаунта.';
+
+  @override
+  String get deleteAccount => 'Удалить аккаунт';
+
+  @override
+  String get deleteAccountHint => 'Навсегда: устройства, ключи и имя';
+
+  @override
+  String get deleteAccountTitle => 'Удалить аккаунт?';
+
+  @override
+  String get deleteAccountBody =>
+      'Все ваши устройства выйдут из аккаунта, их ключи сотрутся, вы покинете все группы, а имя пользователя освободится. Отправленные сообщения останутся у тех, кто их получил. Отменить это нельзя.';
+
+  @override
+  String get deleteAccountConfirm => 'Удалить навсегда';
+
+  @override
+  String get about => 'О приложении';
+
+  @override
+  String appVersion(String version) {
+    return 'Версия $version';
+  }
+
+  @override
+  String get licenses => 'Лицензии открытого ПО';
+
+  @override
+  String get deletedAccount => 'Удалённый аккаунт';
+
+  @override
+  String get search => 'Поиск';
+
+  @override
+  String get searchHint => 'Чаты и сообщения';
+
+  @override
+  String get searchMessages => 'Сообщения';
+
+  @override
+  String get searchNothing => 'Ничего не нашлось';
+
+  @override
+  String get notifications => 'Уведомления';
+
+  @override
+  String get notificationsShow => 'Показывать уведомления';
+
+  @override
+  String get notificationsPreview => 'Показывать текст сообщения';
+
+  @override
+  String get notificationsPreviewHint =>
+      'Если выключить — только «Новое сообщение», без имени и текста';
+
+  @override
+  String get notifyNewMessage => 'Новое сообщение';
+
+  @override
+  String get notifyVoice => 'Голосовое сообщение';
+
+  @override
+  String get trayOpen => 'Открыть Frogster';
+
+  @override
+  String get trayQuit => 'Выйти';
 }

@@ -20,6 +20,7 @@ import 'data/local/dao/message_dao.dart';
 import 'data/local/dao/session_dao.dart';
 import 'data/local/database.dart';
 import 'data/models/models.dart';
+import 'data/notifications/notification_service.dart';
 import 'data/remote/api_client.dart';
 import 'data/remote/file_client.dart';
 import 'data/remote/server_config.dart';
@@ -35,10 +36,12 @@ import 'features/chat/view/chat_screen.dart';
 import 'features/chat_list/view/chat_list_screen.dart';
 import 'features/group/view/group_info_screen.dart';
 import 'features/new_chat/view/new_chat_screen.dart';
+import 'features/search/view/search_screen.dart';
 import 'features/settings/view/safety_number_screen.dart';
 import 'features/settings/view/settings_screen.dart';
 import 'l10n/app_localizations.dart';
 import 'ui/adaptive/adaptive_shell.dart';
+import 'ui/desktop/desktop_shell.dart';
 import 'ui/theme/app_theme.dart';
 import 'ui/widgets/brand_mark.dart';
 
@@ -46,6 +49,10 @@ import 'ui/widgets/brand_mark.dart';
 /// build time: `flutter run --dart-define=FROGSTER_SERVER=chat.example.com`.
 /// Users can always type another one.
 const String defaultServer = String.fromEnvironment('FROGSTER_SERVER');
+
+/// Shown under "About". Release builds pass the tag:
+/// `--dart-define=FROGSTER_VERSION=v1.2.0`.
+const String appVersion = String.fromEnvironment('FROGSTER_VERSION', defaultValue: '1.0.0');
 
 class FrogsterApp extends StatefulWidget {
   const FrogsterApp({super.key});
@@ -122,7 +129,16 @@ class _Connection {
   }
 }
 
-class _AppRootState extends State<_AppRoot> {
+class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
+  final _notifications = NotificationService();
+  StreamSubscription<Message>? _arrivalSub;
+  StreamSubscription<String>? _tapSub;
+  var _lifecycle = AppLifecycleState.resumed;
+
+  /// The chat whose notification was last cleared, so a rebuild does not
+  /// clear it over and over.
+  String? _clearedFor;
+
   final _keys = SecureKeyStorage();
   final _accounts = AccountStore();
 
@@ -139,6 +155,10 @@ class _AppRootState extends State<_AppRoot> {
 
   Account? _account;
   List<Chat> _chats = const [];
+
+  /// The same list for screens pushed on top, such as the archive, which
+  /// must follow changes without being rebuilt from here.
+  final _chatList = ValueNotifier<List<Chat>>(const []);
   Chat? _selected;
   var _socketState = SocketState.disconnected;
 
@@ -157,6 +177,9 @@ class _AppRootState extends State<_AppRoot> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    unawaited(_notifications.initialize());
+    _tapSub = _notifications.taps.listen(_openFromNotification);
     _bootstrap();
   }
 
@@ -394,6 +417,8 @@ class _AppRootState extends State<_AppRoot> {
 
     await _chatSub?.cancel();
     _chatSub = repository.chatUpdates.listen((_) => _refreshChats());
+    await _arrivalSub?.cancel();
+    _arrivalSub = repository.arrivals.listen(_onArrival);
 
     final maintenance = KeyMaintenance(
       crypto: crypto,
@@ -415,11 +440,13 @@ class _AppRootState extends State<_AppRoot> {
       _keyMaintenance = maintenance;
       _chats = chats;
     });
+    _chatList.value = chats;
   }
 
   Future<void> _refreshChats() async {
     final chats = await _dao!.chats();
     if (!mounted) return;
+    _chatList.value = chats;
     setState(() {
       _chats = chats;
       // The open chat follows its row: renamed, or gone after leaving.
@@ -528,6 +555,121 @@ class _AppRootState extends State<_AppRoot> {
     ));
   }
 
+  /// Carries out what a chat row's menu asked for.
+  Future<void> _onChatAction(Chat chat, ChatAction action) async {
+    final repository = _repository;
+    if (repository == null) return;
+    final l10n = AppLocalizations.of(context);
+    try {
+      switch (action) {
+        case ChatAction.togglePin:
+          await repository.setPinned(chat.id, !chat.pinned);
+        case ChatAction.toggleMute:
+          await repository.setMuted(chat.id, !chat.muted);
+        case ChatAction.toggleArchive:
+          await repository.setArchived(chat.id, !chat.archived);
+        case ChatAction.delete:
+          final confirmed = await showDialog<bool>(
+            context: context,
+            builder: (dialogContext) => AlertDialog(
+              title: Text(chat.isGroup ? l10n.leaveGroupTitle : l10n.deleteChatTitle),
+              content: Text(chat.isGroup
+                  ? l10n.leaveGroupBody
+                  : chat.isCloud
+                      ? l10n.deleteChatBody
+                      : l10n.deleteSecretChatBody),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(false),
+                  child: Text(l10n.cancel),
+                ),
+                FilledButton(
+                  style: FilledButton.styleFrom(backgroundColor: Theme.of(dialogContext).colorScheme.error),
+                  onPressed: () => Navigator.of(dialogContext).pop(true),
+                  child: Text(chat.isGroup ? l10n.leave : l10n.delete),
+                ),
+              ],
+            ),
+          );
+          if (!(confirmed ?? false)) return;
+          if (chat.isGroup) {
+            await _api.leaveChat(chat.id);
+            await repository.forgetChat(chat.id);
+          } else {
+            await repository.deleteDirectChat(chat.id);
+          }
+          if (mounted && _selected?.id == chat.id) setState(() => _selected = null);
+      }
+    } catch (e) {
+      _showError(e);
+    }
+  }
+
+  Future<void> _openArchive() async {
+    final navigator = Navigator.of(context);
+    await navigator.push(MaterialPageRoute<void>(
+      builder: (_) => ValueListenableBuilder<List<Chat>>(
+        valueListenable: _chatList,
+        builder: (context, chats, _) => ChatListScreen(
+          archive: true,
+          chats: chats,
+          connection: _socketState,
+          onOpenChat: (chat) {
+            navigator.pop();
+            setState(() => _selected = chat);
+          },
+          onChatAction: _onChatAction,
+        ),
+      ),
+    ));
+  }
+
+  Future<void> _openSearch() async {
+    final navigator = Navigator.of(context);
+    await navigator.push(MaterialPageRoute<void>(
+      builder: (_) => SearchScreen(
+        chats: _chats,
+        searchMessages: (query) => _dao!.search(query),
+        onOpenChat: (chat) {
+          navigator.pop();
+          setState(() => _selected = chat);
+        },
+      ),
+    ));
+  }
+
+  /// Asks which chat a message should be forwarded to.
+  Future<Chat?> _pickForwardTarget() {
+    final l10n = AppLocalizations.of(context);
+    final targets = _chats.where((c) => !c.hidden).toList();
+    return showDialog<Chat>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: Text(l10n.forwardTo),
+        children: [
+          SizedBox(
+            width: 360,
+            height: 420,
+            child: ListView(
+              children: [
+                for (final chat in targets)
+                  ListTile(
+                    leading: Icon(
+                      chat.isGroup ? Icons.groups_rounded : Icons.person_rounded,
+                      color: chat.isSecret ? Theme.of(dialogContext).colorScheme.tertiary : null,
+                    ),
+                    title: Text(chat.displayName, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    trailing: chat.isSecret ? const Icon(Icons.lock_rounded, size: 16) : null,
+                    onTap: () => Navigator.of(dialogContext).pop(chat),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _openGroupInfo(Chat chat) async {
     final account = _account;
     final repository = _repository;
@@ -603,6 +745,19 @@ class _AppRootState extends State<_AppRoot> {
           onSignOut: ({required bool forget}) {
             Navigator.of(context).pop();
             _signOut(forget: forget);
+          },
+          appVersion: appVersion,
+          loadProfile: _api.me,
+          onSaveProfile: (name, bio) => _api.updateMe(displayName: name, bio: bio),
+          onChangePassword: (current, next) =>
+              _api.changePassword(currentPassword: current, newPassword: next),
+          onDeleteAccount: (password) async {
+            await _api.deleteAccount(password);
+            if (!mounted) return;
+            Navigator.of(context).pop();
+            // Nothing of the account is left to come back to: the keys and
+            // the local history go too.
+            await _signOut(forget: true);
           },
         ),
       ),
@@ -713,6 +868,11 @@ class _AppRootState extends State<_AppRoot> {
   void dispose() {
     _keyMaintenance?.stop();
     _chatSub?.cancel();
+    _arrivalSub?.cancel();
+    _tapSub?.cancel();
+    _notifications.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    _chatList.dispose();
     _repository?.dispose();
     _disconnect();
     _database?.close();
@@ -745,6 +905,9 @@ class _AppRootState extends State<_AppRoot> {
         onOpenChat: (chat) => setState(() => _selected = chat),
         onNewChat: _startChat,
         onOpenSettings: _openSettings,
+        onChatAction: _onChatAction,
+        onOpenArchive: _openArchive,
+        onSearch: _openSearch,
       ),
       detail: _selected == null ? null : _buildChat(_selected!),
     );
@@ -754,7 +917,64 @@ class _AppRootState extends State<_AppRoot> {
   ///
   /// Keyed by chat id so switching conversations creates a fresh bloc rather
   /// than reusing one still holding the previous chat's messages.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) => _lifecycle = state;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // The tray menu speaks the interface language, and follows it.
+    final l10n = AppLocalizations.of(context);
+    unawaited(DesktopShell.instance.attach(openLabel: l10n.trayOpen, quitLabel: l10n.trayQuit));
+  }
+
+  /// A message from someone else arrived: tell the user unless they are
+  /// already looking at it.
+  Future<void> _onArrival(Message message) async {
+    final chat = await _dao?.chatById(message.chatId);
+    final inFront = _lifecycle == AppLifecycleState.resumed &&
+        await DesktopShell.instance.isInFront();
+    final prefs = widget.preferences;
+    if (!shouldNotify(
+      message: message,
+      chat: chat,
+      enabled: prefs.notifications,
+      appInFront: inFront,
+      openChatId: _selected?.id,
+    )) {
+      return;
+    }
+    if (!mounted || chat == null) return;
+    final l10n = AppLocalizations.of(context);
+    final content = notificationContent(
+      message: message,
+      chat: chat,
+      showPreview: prefs.notificationPreview,
+      texts: NotificationTexts(
+        newMessage: l10n.notifyNewMessage,
+        photo: l10n.previewPhoto,
+        file: l10n.previewFile,
+        voice: l10n.notifyVoice,
+        appName: l10n.appTitle,
+      ),
+    );
+    _clearedFor = null;
+    await _notifications.show(chatId: chat.id, title: content.title, body: content.body);
+  }
+
+  /// The user tapped a notification: show that chat.
+  Future<void> _openFromNotification(String chatId) async {
+    await DesktopShell.instance.bringToFront();
+    final chat = _chats.where((c) => c.id == chatId).firstOrNull ??
+        await _dao?.chatById(chatId);
+    if (chat != null && mounted) setState(() => _selected = chat);
+  }
+
   Widget _buildChat(Chat chat) {
+    if (_clearedFor != chat.id) {
+      _clearedFor = chat.id;
+      unawaited(_notifications.clear(chat.id));
+    }
     return BlocProvider<ChatBloc>(
       key: ValueKey(chat.id),
       create: (_) => ChatBloc(
@@ -768,6 +988,7 @@ class _AppRootState extends State<_AppRoot> {
         onBack: () => setState(() => _selected = null),
         onShowSafetyNumber: () => _showSafetyNumber(chat),
         onOpenInfo: () => _openGroupInfo(chat),
+        onPickForwardTarget: _pickForwardTarget,
         onPickAttachment: _pickFile,
         onDownloadAttachment: (attachment) =>
             _attachments!.download(attachment),

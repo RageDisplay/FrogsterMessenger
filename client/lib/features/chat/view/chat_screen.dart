@@ -1,7 +1,10 @@
 /// The conversation view.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
@@ -22,6 +25,7 @@ class ChatScreen extends StatefulWidget {
     this.onBack,
     this.onShowSafetyNumber,
     this.onOpenInfo,
+    this.onPickForwardTarget,
     this.onPickAttachment,
     this.onDownloadAttachment,
     this.onOpenAttachment,
@@ -32,6 +36,9 @@ class ChatScreen extends StatefulWidget {
 
   /// Opens the group's details: members, name, leaving.
   final VoidCallback? onOpenInfo;
+
+  /// Asks which chat to forward a message to.
+  final Future<Chat?> Function()? onPickForwardTarget;
 
   /// Opens the file picker and returns the chosen file, or null if cancelled.
   final Future<PickedAttachment?> Function()? onPickAttachment;
@@ -73,6 +80,17 @@ class _ChatScreenState extends State<ChatScreen> {
   /// The message being edited, when the composer is in edit mode.
   Message? _editing;
 
+  /// The message being answered.
+  Message? _replyTo;
+
+  /// Lets the view jump to a message: the first unread one, or a quoted one.
+  final _keys = <String, GlobalKey>{};
+  GlobalKey _keyFor(String id) => _keys.putIfAbsent(id, GlobalKey.new);
+
+  var _draftRestored = false;
+  var _jumpedToUnread = false;
+  Timer? _draftTimer;
+
   @override
   void initState() {
     super.initState();
@@ -80,11 +98,76 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// Asks for older messages as the top of what is loaded comes into view.
+  /// The list runs bottom-up, so the top is the far end of the scroll.
   void _onScroll() {
     if (!_scroll.hasClients) return;
-    if (_scroll.position.pixels <= 200) {
+    final position = _scroll.position;
+    if (position.pixels >= position.maxScrollExtent - 300) {
       context.read<ChatBloc>().add(const ChatOlderRequested());
     }
+  }
+
+  /// Keeps the draft and tells the others we type, without writing to the
+  /// database on every keystroke.
+  void _onComposerChanged(String text) {
+    if (_editing != null) return;
+    _draftTimer?.cancel();
+    _draftTimer = Timer(const Duration(milliseconds: 400), () {
+      if (mounted) context.read<ChatBloc>().add(ChatComposerChanged(text));
+    });
+  }
+
+  void _jumpTo(String messageId) {
+    final target = _keys[messageId]?.currentContext;
+    if (target == null) return;
+    Scrollable.ensureVisible(
+      target,
+      alignment: 0.5,
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOut,
+    );
+  }
+
+  /// First time the conversation is ready: put the draft back, and start
+  /// at the first unread message rather than the bottom.
+  void _onReady(ChatState state) {
+    if (!_draftRestored) {
+      _draftRestored = true;
+      final draft = state.chat?.draft ?? '';
+      if (draft.isNotEmpty && _composer.text.isEmpty) _composer.text = draft;
+    }
+    final firstUnread = state.firstUnreadId;
+    if (!_jumpedToUnread && firstUnread != null) {
+      _jumpedToUnread = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final target = _keys[firstUnread]?.currentContext;
+        if (target != null) Scrollable.ensureVisible(target, alignment: 0.9);
+      });
+    }
+  }
+
+  String _authorOf(Message message, Chat? chat, AppLocalizations l10n) {
+    if (message.isOutgoing) return l10n.you;
+    return chat?.member(message.senderId)?.name ?? chat?.displayName ?? '';
+  }
+
+  String _snippet(Message message, AppLocalizations l10n) {
+    if (message.body.isNotEmpty) return message.body;
+    final attachment = message.attachment;
+    if (attachment == null) return l10n.replyUnknown;
+    return attachment.isImage ? l10n.previewPhoto : (attachment.fileName ?? l10n.previewFile);
+  }
+
+  Future<void> _forward(BuildContext context, Message message) async {
+    final picker = widget.onPickForwardTarget;
+    if (picker == null) return;
+    final bloc = context.read<ChatBloc>();
+    final messenger = ScaffoldMessenger.of(context);
+    final l10n = AppLocalizations.of(context);
+    final target = await picker();
+    if (target == null) return;
+    bloc.add(ChatMessageForwarded(message, target.id));
+    messenger.showSnackBar(SnackBar(content: Text(l10n.forwardedDone(target.displayName))));
   }
 
   /// Per-attachment download state, keyed by blob id.
@@ -100,6 +183,11 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    // A draft typed in the last moments before leaving is kept too.
+    if (_draftTimer?.isActive ?? false) {
+      _draftTimer!.cancel();
+      if (_editing == null) context.read<ChatBloc>().add(ChatComposerChanged(_composer.text));
+    }
     _composer.dispose();
     _scroll.dispose();
     super.dispose();
@@ -122,9 +210,15 @@ class _ChatScreenState extends State<ChatScreen> {
     // A message needs either text or a file; an empty send is a no-op.
     if (text.isEmpty && staged == null) return;
 
-    context.read<ChatBloc>().add(ChatMessageSent(text, attachment: staged));
+    context.read<ChatBloc>().add(
+          ChatMessageSent(text, attachment: staged, replyToId: _replyTo?.id),
+        );
+    _draftTimer?.cancel();
     _composer.clear();
-    setState(() => _staged = null);
+    setState(() {
+      _staged = null;
+      _replyTo = null;
+    });
     _scrollToBottom();
   }
 
@@ -185,8 +279,18 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  void _startReply(Message message) {
+    setState(() {
+      _editing = null;
+      _replyTo = message;
+    });
+  }
+
   void _startEditing(Message message) {
-    setState(() => _editing = message);
+    setState(() {
+      _editing = message;
+      _replyTo = null;
+    });
     _composer.text = message.body;
     _composer.selection = TextSelection.collapsed(offset: message.body.length);
   }
@@ -231,6 +335,18 @@ class _ChatScreenState extends State<ChatScreen> {
                     ],
                   ),
                 ),
+              if (message.seq != null)
+                ListTile(
+                  leading: const Icon(Icons.reply_rounded),
+                  title: Text(l10n.actionReply),
+                  onTap: () => Navigator.of(sheetContext).pop('reply'),
+                ),
+              if (message.seq != null && widget.onPickForwardTarget != null)
+                ListTile(
+                  leading: const Icon(Icons.shortcut_rounded),
+                  title: Text(l10n.actionForward),
+                  onTap: () => Navigator.of(sheetContext).pop('forward'),
+                ),
               if (message.body.isNotEmpty)
                 ListTile(
                   leading: const Icon(Icons.copy_rounded),
@@ -271,6 +387,10 @@ class _ChatScreenState extends State<ChatScreen> {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(l10n.textCopied)));
       }
+    } else if (action == 'reply') {
+      _startReply(message);
+    } else if (action == 'forward') {
+      if (context.mounted) await _forward(context, message);
     } else if (action == 'retry') {
       bloc.add(ChatRetryRequested(message));
     } else if (action == 'edit') {
@@ -298,32 +418,33 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  /// The list runs bottom-up, so the newest message is at offset zero.
   void _scrollToBottom() {
-    // Deferred: the new message has not been laid out yet when the event is
-    // dispatched, so the max extent is still the old one.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_scroll.hasClients) return;
-      _scroll.animateTo(
-        _scroll.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
-      );
-    });
+    if (!_scroll.hasClients) return;
+    _scroll.animateTo(
+      0,
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOut,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return BlocConsumer<ChatBloc, ChatState>(
-      // New messages at the bottom scroll into view; older ones loaded at the
-      // top must not yank the view away from what the user is reading.
       listenWhen: (previous, current) =>
-          previous.messages.length != current.messages.length &&
-          (previous.messages.isEmpty ||
-              current.messages.isEmpty ||
-              previous.messages.last.id != current.messages.last.id),
-      listener: (context, state) => _scrollToBottom(),
+          previous.status != ChatStatus.ready && current.status == ChatStatus.ready,
+      listener: (context, state) => _onReady(state),
       builder: (context, state) {
         final chat = state.chat;
+        final l10n = AppLocalizations.of(context);
+        final typing = state.typingUserIds;
+        final typingText = typing.isEmpty
+            ? null
+            : !(chat?.isGroup ?? false)
+                ? l10n.typing
+                : typing.length > 1
+                    ? l10n.typingSeveral
+                    : l10n.typingNamed(chat?.member(typing.first)?.name ?? '');
         return Scaffold(
           body: SafeArea(
             child: Column(
@@ -337,6 +458,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     onShowSafetyNumber:
                         chat.isSecret && !chat.isGroup ? widget.onShowSafetyNumber : null,
                     onOpenInfo: chat.isGroup ? widget.onOpenInfo : null,
+                    typing: typingText,
                   ),
                 if (state.identityChanged)
                   _IdentityChangeBanner(blocksSending: state.sendingBlocked),
@@ -348,9 +470,16 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                 if (_editing != null)
                   _EditingBar(message: _editing!, onCancel: _cancelEditing),
+                if (_replyTo != null)
+                  _ReplyBar(
+                    author: _authorOf(_replyTo!, chat, l10n),
+                    text: _snippet(_replyTo!, l10n),
+                    onCancel: () => setState(() => _replyTo = null),
+                  ),
                 _Composer(
                   controller: _composer,
                   enabled: state.canSend,
+                  onChanged: _onComposerChanged,
                   onSend: () => _send(context),
                   onAttach: widget.onPickAttachment == null ||
                           _uploading ||
@@ -384,13 +513,20 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     final chat = state.chat;
-    final offset = state.loadingOlder ? 1 : 0;
+    final messages = state.messages;
+    final byId = {for (final m in messages) m.id: m};
+    final extra = state.loadingOlder ? 1 : 0;
+
+    // Bottom-up: index 0 is the newest message. The view opens at the
+    // bottom without scrolling there, and older pages grow at the far end.
     return ListView.builder(
       controller: _scroll,
+      reverse: true,
+      scrollCacheExtent: const ScrollCacheExtent.pixels(2000),
       padding: const EdgeInsets.symmetric(vertical: 8),
-      itemCount: state.messages.length + offset,
+      itemCount: messages.length + extra,
       itemBuilder: (context, rawIndex) {
-        if (rawIndex < offset) {
+        if (rawIndex >= messages.length) {
           return const Padding(
             padding: EdgeInsets.all(12),
             child: Center(
@@ -401,9 +537,9 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           );
         }
-        final index = rawIndex - offset;
-        final message = state.messages[index];
-        final previous = index == 0 ? null : state.messages[index - 1];
+        final index = messages.length - 1 - rawIndex;
+        final message = messages[index];
+        final previous = index == 0 ? null : messages[index - 1];
         // In a group, each run of messages from one person carries their
         // name once.
         final showName = (chat?.isGroup ?? false) &&
@@ -411,12 +547,20 @@ class _ChatScreenState extends State<ChatScreen> {
             (previous == null ||
                 previous.senderId != message.senderId ||
                 !isSameDay(previous.sentAt, message.sentAt));
+        final replied = message.replyToId == null ? null : byId[message.replyToId];
         final bubble = MessageBubble(
           message: message,
           selfUserId: widget.selfUserId,
           senderName: showName
               ? (chat?.member(message.senderId)?.name ?? message.senderId.substring(0, 8))
               : null,
+          quote: message.replyToId == null
+              ? null
+              : (
+                  author: replied == null ? l10n.replyUnknown : _authorOf(replied, chat, l10n),
+                  text: replied == null ? '…' : _snippet(replied, l10n),
+                ),
+          onTapQuote: replied == null ? null : () => _jumpTo(replied.id),
           onActions: () => _showActions(context, message),
           onRetry: () => context.read<ChatBloc>().add(ChatRetryRequested(message)),
           onReact: (emoji, remove) => context.read<ChatBloc>().add(
@@ -440,16 +584,151 @@ class _ChatScreenState extends State<ChatScreen> {
             );
           },
         );
-        if (previous != null && isSameDay(previous.sentAt, message.sentAt)) {
-          return bubble;
-        }
-        return Column(
-          children: [
-            _DayChip(label: formatDayLabel(context, message.sentAt)),
-            bubble,
-          ],
+        final swipeable = message.seq == null
+            ? bubble
+            : _SwipeToReply(onReply: () => _startReply(message), child: bubble);
+        final newDay = previous == null || !isSameDay(previous.sentAt, message.sentAt);
+        final unreadStart = message.id == state.firstUnreadId;
+        return KeyedSubtree(
+          key: _keyFor(message.id),
+          child: Column(
+            children: [
+              if (newDay) _DayChip(label: formatDayLabel(context, message.sentAt)),
+              if (unreadStart) _UnreadDivider(label: l10n.unreadDivider),
+              swipeable,
+            ],
+          ),
         );
       },
+    );
+  }
+}
+
+/// Drag a message to the right to answer it, as on a phone.
+class _SwipeToReply extends StatefulWidget {
+  const _SwipeToReply({required this.onReply, required this.child});
+
+  final VoidCallback onReply;
+  final Widget child;
+
+  @override
+  State<_SwipeToReply> createState() => _SwipeToReplyState();
+}
+
+class _SwipeToReplyState extends State<_SwipeToReply> {
+  static const _trigger = 56.0;
+  var _dx = 0.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final pond = context.pond;
+    return GestureDetector(
+      onHorizontalDragUpdate: (d) => setState(() => _dx = (_dx + d.delta.dx).clamp(0, 80)),
+      onHorizontalDragEnd: (_) {
+        if (_dx >= _trigger) {
+          HapticFeedback.selectionClick();
+          widget.onReply();
+        }
+        setState(() => _dx = 0);
+      },
+      onHorizontalDragCancel: () => setState(() => _dx = 0),
+      child: Stack(
+        alignment: Alignment.centerLeft,
+        children: [
+          if (_dx > 8)
+            Padding(
+              padding: const EdgeInsets.only(left: 14),
+              child: Opacity(
+                opacity: (_dx / _trigger).clamp(0, 1),
+                child: Icon(Icons.reply_rounded, color: pond.accent),
+              ),
+            ),
+          AnimatedContainer(
+            duration: Duration(milliseconds: _dx == 0 ? 180 : 0),
+            transform: Matrix4.translationValues(_dx, 0, 0),
+            child: widget.child,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _UnreadDivider extends StatelessWidget {
+  const _UnreadDivider({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final pond = context.pond;
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      color: pond.accentSoft,
+      alignment: Alignment.center,
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+          color: pond.accent,
+        ),
+      ),
+    );
+  }
+}
+
+/// Shown above the composer while answering a message.
+class _ReplyBar extends StatelessWidget {
+  const _ReplyBar({required this.author, required this.text, required this.onCancel});
+
+  final String author;
+  final String text;
+  final VoidCallback onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    final pond = context.pond;
+    final l10n = AppLocalizations.of(context);
+    return Container(
+      margin: const EdgeInsets.fromLTRB(10, 4, 10, 0),
+      padding: const EdgeInsets.fromLTRB(14, 4, 4, 4),
+      decoration: BoxDecoration(
+        color: pond.lily,
+        borderRadius: BorderRadius.circular(PondRadii.control),
+        border: Border.all(color: pond.outline),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.reply_rounded, size: 18, color: pond.accent),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  l10n.replyingTo(author),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: pond.accent),
+                ),
+                Text(
+                  text,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 13, color: pond.inkMuted),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: l10n.cancel,
+            onPressed: onCancel,
+            icon: const Icon(Icons.close_rounded, size: 20),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -461,6 +740,7 @@ class _Header extends StatelessWidget {
     this.onBack,
     this.onShowSafetyNumber,
     this.onOpenInfo,
+    this.typing,
   });
 
   final Chat chat;
@@ -468,12 +748,15 @@ class _Header extends StatelessWidget {
   final VoidCallback? onShowSafetyNumber;
   final VoidCallback? onOpenInfo;
 
+  /// Replaces the subtitle while someone types.
+  final String? typing;
+
   @override
   Widget build(BuildContext context) {
     final pond = context.pond;
     final l10n = AppLocalizations.of(context);
 
-    final subtitle = switch ((chat.isGroup, chat.isSecret)) {
+    final subtitle = typing ?? switch ((chat.isGroup, chat.isSecret)) {
       (true, true) => l10n.secretGroupSubtitle(chat.members.length),
       (true, false) => l10n.membersCount(chat.members.length),
       (false, true) => l10n.secretChatSubtitle,
@@ -539,7 +822,9 @@ class _Header extends StatelessWidget {
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
                                     fontSize: 12,
-                                    color: chat.isSecret ? pond.mint : pond.inkMuted,
+                                    color: typing != null
+                                        ? pond.accent
+                                        : chat.isSecret ? pond.mint : pond.inkMuted,
                                   ),
                                 ),
                               ),
@@ -810,12 +1095,14 @@ class _Composer extends StatelessWidget {
     required this.controller,
     required this.enabled,
     required this.onSend,
+    this.onChanged,
     this.onAttach,
   });
 
   final TextEditingController controller;
   final bool enabled;
   final VoidCallback onSend;
+  final ValueChanged<String>? onChanged;
   final VoidCallback? onAttach;
 
   @override
@@ -851,6 +1138,7 @@ class _Composer extends StatelessWidget {
               minLines: 1,
               maxLines: 5,
               textInputAction: TextInputAction.send,
+              onChanged: onChanged,
               onSubmitted: (_) => enabled ? onSend() : null,
               style: const TextStyle(fontSize: 15),
               decoration: InputDecoration(

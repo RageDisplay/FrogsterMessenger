@@ -62,6 +62,28 @@ class ChatMessageDeleted extends ChatEvent {
   final Message message;
 }
 
+/// Forward a message to another chat.
+class ChatMessageForwarded extends ChatEvent {
+  const ChatMessageForwarded(this.message, this.toChatId);
+
+  final Message message;
+  final String toChatId;
+}
+
+/// The composer's text changed: keep the draft, tell the others we type.
+class ChatComposerChanged extends ChatEvent {
+  const ChatComposerChanged(this.text);
+
+  final String text;
+}
+
+class _ChatTypingSeen extends ChatEvent {
+  const _ChatTypingSeen(this.userId, {required this.typing});
+
+  final String userId;
+  final bool typing;
+}
+
 class ChatRetryRequested extends ChatEvent {
   const ChatRetryRequested(this.message);
 
@@ -118,6 +140,8 @@ class ChatState {
     this.uploading = false,
     this.loadingOlder = false,
     this.reachedStart = false,
+    this.typingUserIds = const {},
+    this.firstUnreadId,
     this.error,
   });
 
@@ -143,6 +167,13 @@ class ChatState {
   /// Nothing older exists, locally or on the server.
   final bool reachedStart;
 
+  /// Members typing right now.
+  final Set<String> typingUserIds;
+
+  /// The first message that was unread when the chat was opened, where the
+  /// view starts and draws its divider.
+  final String? firstUnreadId;
+
   final String? error;
 
   String? get chatId => chat?.id;
@@ -165,6 +196,8 @@ class ChatState {
     bool? uploading,
     bool? loadingOlder,
     bool? reachedStart,
+    Set<String>? typingUserIds,
+    String? firstUnreadId,
     String? error,
   }) =>
       ChatState(
@@ -177,6 +210,8 @@ class ChatState {
         uploading: uploading ?? this.uploading,
         loadingOlder: loadingOlder ?? this.loadingOlder,
         reachedStart: reachedStart ?? this.reachedStart,
+        typingUserIds: typingUserIds ?? this.typingUserIds,
+        firstUnreadId: firstUnreadId ?? this.firstUnreadId,
         error: error,
       );
 }
@@ -199,6 +234,9 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     on<ChatMessageEdited>(_onEdited);
     on<ChatMessageDeleted>(_onDeleted);
     on<ChatRetryRequested>(_onRetry);
+    on<ChatMessageForwarded>(_onForwarded);
+    on<ChatComposerChanged>(_onComposerChanged);
+    on<_ChatTypingSeen>(_onTypingSeen);
     on<ChatOlderRequested>(_onOlder);
     on<ChatMessageReceived>(_onReceived);
     on<ChatMessageRemoved>(_onRemoved);
@@ -218,6 +256,15 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       if (chatId != state.chatId) return;
       final chat = await _repository.chat(chatId);
       if (chat != null && !isClosed) add(ChatInfoChanged(chat));
+    });
+    _typingSub = _repository.typing.listen((notice) {
+      if (notice.chatId != state.chatId || isClosed) return;
+      add(_ChatTypingSeen(notice.userId, typing: true));
+      // A notice holds a few seconds; the next keystrokes renew it.
+      _typingTimers[notice.userId]?.cancel();
+      _typingTimers[notice.userId] = Timer(const Duration(seconds: 6), () {
+        if (!isClosed) add(_ChatTypingSeen(notice.userId, typing: false));
+      });
     });
     _readSub = _repository.reads.listen((update) {
       if (update.chatId == state.chatId) add(ChatReadUpTo(update.seq));
@@ -241,6 +288,8 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
   late final StreamSubscription<Message> _removedSub;
   late final StreamSubscription<ReadUpdate> _readSub;
   late final StreamSubscription<String> _chatSub;
+  late final StreamSubscription<TypingNotice> _typingSub;
+  final Map<String, Timer> _typingTimers = {};
   late final StreamSubscription<IdentityChangeAlert> _alertSub;
 
   static const _pageSize = 50;
@@ -249,11 +298,22 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     emit(state.copyWith(status: ChatStatus.loading, chat: event.chat));
 
     try {
-      final history = await _repository.history(event.chat.id, limit: _pageSize);
+      // Enough history to reach the first unread message, so the view can
+      // start there rather than at the bottom.
+      final unread = event.chat.unreadCount;
+      final history = await _repository.history(
+        event.chat.id,
+        limit: unread + 10 > _pageSize ? unread + 10 : _pageSize,
+      );
+      final incoming = history.where((m) => !m.isOutgoing).toList();
+      final firstUnread = unread > 0 && unread <= incoming.length
+          ? incoming[incoming.length - unread].id
+          : null;
       emit(state.copyWith(
         status: ChatStatus.ready,
         messages: history,
         reachedStart: history.length < _pageSize && event.chat.isSecret,
+        firstUnreadId: firstUnread,
       ));
       await _repository.markRead(event.chat.id);
     } catch (e) {
@@ -362,6 +422,37 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     }
   }
 
+  Future<void> _onForwarded(ChatMessageForwarded event, Emitter<ChatState> emit) async {
+    final message = event.message;
+    final chat = state.chat;
+    final author = message.forwardedFrom ??
+        (chat?.member(message.senderId)?.name ??
+            (message.isOutgoing ? null : chat?.displayName) ??
+            '');
+    try {
+      await _repository.forward(message, event.toChatId, authorName: author);
+    } catch (e) {
+      emit(state.copyWith(error: e.toString()));
+    }
+  }
+
+  Future<void> _onComposerChanged(ChatComposerChanged event, Emitter<ChatState> emit) async {
+    final chatId = state.chatId;
+    if (chatId == null) return;
+    if (event.text.trim().isNotEmpty) _repository.typingIn(chatId);
+    await _repository.saveDraft(chatId, event.text);
+  }
+
+  void _onTypingSeen(_ChatTypingSeen event, Emitter<ChatState> emit) {
+    final ids = {...state.typingUserIds};
+    if (event.typing) {
+      ids.add(event.userId);
+    } else {
+      ids.remove(event.userId);
+    }
+    emit(state.copyWith(typingUserIds: ids));
+  }
+
   Future<void> _onRetry(ChatRetryRequested event, Emitter<ChatState> emit) async {
     try {
       await _repository.retry(event.message);
@@ -380,6 +471,12 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       updated[index] = event.message;
     } else {
       updated.add(event.message);
+      if (state.typingUserIds.contains(event.message.senderId)) {
+        _typingTimers.remove(event.message.senderId)?.cancel();
+        emit(state.copyWith(
+          typingUserIds: {...state.typingUserIds}..remove(event.message.senderId),
+        ));
+      }
       // Seen as it arrives: the chat is open on screen.
       if (!event.message.isOutgoing) {
         final chatId = state.chatId;
@@ -452,6 +549,10 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     await _removedSub.cancel();
     await _readSub.cancel();
     await _chatSub.cancel();
+    await _typingSub.cancel();
+    for (final t in _typingTimers.values) {
+      t.cancel();
+    }
     await _alertSub.cancel();
     return super.close();
   }

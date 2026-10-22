@@ -127,6 +127,9 @@ func (s *Server) Routes() http.Handler {
 
 	mux.Handle("GET /v1/me", authed(s.handleGetMe))
 	mux.Handle("PATCH /v1/me", authed(s.handleUpdateMe))
+	mux.Handle("DELETE /v1/me",
+		requireAuth(ratelimit.Middleware(s.limiter, ratelimit.RulePassword, byUser, s.log)(
+			http.HandlerFunc(s.handleDeleteMe))))
 
 	mux.Handle("GET /v1/chats", authed(s.handleListChats))
 	mux.Handle("POST /v1/chats", authed(s.handleCreateChat))
@@ -136,6 +139,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /v1/chats/{id}/members", authed(s.handleAddMembers))
 	mux.Handle("DELETE /v1/chats/{id}/members/{user}", authed(s.handleRemoveMember))
 	mux.Handle("POST /v1/chats/{id}/leave", authed(s.handleLeaveChat))
+	mux.Handle("POST /v1/chats/{id}/clear", authed(s.handleClearChat))
 
 	mux.Handle("GET /v1/sessions", authed(s.handleListSessions))
 	mux.Handle("DELETE /v1/sessions/{id}", authed(s.handleRevokeSession))

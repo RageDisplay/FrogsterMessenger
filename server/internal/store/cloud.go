@@ -191,10 +191,11 @@ func isAdmin(tx *gorm.DB, chatID, userID uuid.UUID) (bool, error) {
 // CloudHistory returns up to limit messages of a cloud chat before seq
 // beforeSeq (0 for the newest), newest first, in their current state:
 // edited text, deletions and reactions applied. Events are left out; their
-// effect is already visible.
-func (s *Store) CloudHistory(ctx context.Context, chatID uuid.UUID, beforeSeq int64, limit int) ([]CloudMessage, error) {
+// effect is already visible. Nothing at or below floor -- where the reader
+// cleared the chat -- is returned.
+func (s *Store) CloudHistory(ctx context.Context, chatID uuid.UUID, floor, beforeSeq int64, limit int) ([]CloudMessage, error) {
 	q := s.db.WithContext(ctx).
-		Where("chat_id = ? AND kind = ''", chatID).
+		Where("chat_id = ? AND kind = '' AND seq > ?", chatID, floor).
 		Order("seq DESC").Limit(limit)
 	if beforeSeq > 0 {
 		q = q.Where("seq < ?", beforeSeq)
@@ -212,8 +213,9 @@ func (s *Store) CloudHistory(ctx context.Context, chatID uuid.UUID, beforeSeq in
 
 // CloudSince returns up to limit rows of a cloud chat after seq afterSeq,
 // oldest first, events included: what a device that last saw afterSeq has
-// to replay to catch up.
-func (s *Store) CloudSince(ctx context.Context, chatID uuid.UUID, afterSeq int64, limit int) ([]CloudMessage, error) {
+// to replay to catch up. Rows at or below floor are skipped.
+func (s *Store) CloudSince(ctx context.Context, chatID uuid.UUID, floor, afterSeq int64, limit int) ([]CloudMessage, error) {
+	afterSeq = max(afterSeq, floor)
 	var rows []models.Message
 	err := s.db.WithContext(ctx).
 		Where("chat_id = ? AND seq > ?", chatID, afterSeq).

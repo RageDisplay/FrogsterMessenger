@@ -84,7 +84,11 @@ class MessageDao {
   Future<void> editMessage(String id, String body, DateTime editedAt) async {
     await _db.update(
       'messages',
-      {'body': body, 'edited_at': editedAt.millisecondsSinceEpoch},
+      {
+        'body': body,
+        'search_text': body.toLowerCase(),
+        'edited_at': editedAt.millisecondsSinceEpoch,
+      },
       where: 'id = ?',
       whereArgs: [id],
     );
@@ -132,6 +136,10 @@ class MessageDao {
   /// Never INSERT OR REPLACE: SQLite carries out a replace by deleting the
   /// old row first, and the cascade on messages.chat_id would take the whole
   /// history with it -- on every sync.
+  ///
+  /// An update leaves this device's own arrangement alone -- draft, pin,
+  /// mute, archive -- since what the server says about a chat knows nothing
+  /// of it. Those change through their own setters.
   Future<void> upsertChat(Chat chat) async {
     final row = <String, Object?>{
       'id': chat.id,
@@ -156,21 +164,73 @@ class MessageDao {
       whereArgs: [chat.id],
     );
     if (updated == 0) {
-      await _db.insert(
-        'chats',
-        row,
-        conflictAlgorithm: ConflictAlgorithm.ignore,
-      );
+      await _db.insert('chats', {
+        ...row,
+        'draft': chat.draft,
+        'pinned': chat.pinned ? 1 : 0,
+        'muted': chat.muted ? 1 : 0,
+        'archived': chat.archived ? 1 : 0,
+        'hidden': chat.hidden ? 1 : 0,
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
     }
   }
 
-  /// Chats for the list screen, most recently active first.
+  /// Chats for the list screen: pinned ones first, then most recently
+  /// active.
   Future<List<Chat>> chats() async {
     final rows = await _db.query(
       'chats',
-      orderBy: 'COALESCE(last_message_at, 0) DESC',
+      orderBy: 'pinned DESC, COALESCE(last_message_at, 0) DESC',
     );
     return rows.map(_chatFromRow).toList();
+  }
+
+  Future<void> _setFlag(String chatId, String column, Object value) async {
+    await _db.update(
+      'chats',
+      {column: value},
+      where: 'id = ?',
+      whereArgs: [chatId],
+    );
+  }
+
+  Future<void> setDraft(String chatId, String draft) =>
+      _setFlag(chatId, 'draft', draft);
+  Future<void> setPinned(String chatId, bool value) =>
+      _setFlag(chatId, 'pinned', value ? 1 : 0);
+  Future<void> setMuted(String chatId, bool value) =>
+      _setFlag(chatId, 'muted', value ? 1 : 0);
+  Future<void> setArchived(String chatId, bool value) =>
+      _setFlag(chatId, 'archived', value ? 1 : 0);
+  Future<void> setHidden(String chatId, bool value) =>
+      _setFlag(chatId, 'hidden', value ? 1 : 0);
+
+  /// Removes a chat's messages from this device, keeping the chat.
+  Future<void> clearMessages(String chatId) async {
+    await _db.delete('messages', where: 'chat_id = ?', whereArgs: [chatId]);
+    await _db.update(
+      'chats',
+      {'last_message_preview': '', 'unread_count': 0},
+      where: 'id = ?',
+      whereArgs: [chatId],
+    );
+  }
+
+  /// Messages whose text contains [query], newest first, across every chat
+  /// or within one.
+  Future<List<Message>> search(String query, {String? chatId, int limit = 100}) async {
+    final escaped = query
+        .toLowerCase().replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
+    final rows = await _db.query(
+      'messages',
+      where: chatId == null
+          ? "search_text LIKE ? ESCAPE '\\'"
+          : "search_text LIKE ? ESCAPE '\\' AND chat_id = ?",
+      whereArgs: ['%$escaped%', ?chatId],
+      orderBy: 'sent_at DESC',
+      limit: limit,
+    );
+    return rows.map(_fromRow).toList();
   }
 
   Future<Chat?> chatById(String id) async {
@@ -191,9 +251,10 @@ class MessageDao {
     DateTime at, {
     bool incrementUnread = false,
   }) async {
+    // A new message brings a deleted chat back to the list.
     await _db.rawUpdate(
       'UPDATE chats SET last_message_preview = ?, last_message_at = ?, '
-      'unread_count = unread_count + ? WHERE id = ?',
+      'unread_count = unread_count + ?, hidden = 0 WHERE id = ?',
       [preview, at.millisecondsSinceEpoch, incrementUnread ? 1 : 0, chatId],
     );
   }
@@ -267,6 +328,11 @@ class MessageDao {
     role: r['role'] as String? ?? 'member',
     peerReadSeq: r['peer_read_seq'] as int? ?? 0,
     syncedSeq: r['synced_seq'] as int? ?? 0,
+    draft: r['draft'] as String? ?? '',
+    pinned: (r['pinned'] as int? ?? 0) == 1,
+    muted: (r['muted'] as int? ?? 0) == 1,
+    archived: (r['archived'] as int? ?? 0) == 1,
+    hidden: (r['hidden'] as int? ?? 0) == 1,
   );
 
   Map<String, Object?> _toRow(Message m) => {
@@ -285,6 +351,8 @@ class MessageDao {
         ? null
         : jsonEncode(m.attachment!.toJson()),
     'edited_at': m.editedAt?.millisecondsSinceEpoch,
+    'forwarded_from': m.forwardedFrom,
+    'search_text': m.body.toLowerCase(),
   };
 
   Message _fromRow(Map<String, Object?> r) => Message(
@@ -307,6 +375,7 @@ class MessageDao {
     editedAt: r['edited_at'] == null
         ? null
         : DateTime.fromMillisecondsSinceEpoch(r['edited_at'] as int),
+    forwardedFrom: r['forwarded_from'] as String?,
   );
 
   String _encodeReactions(Map<String, Set<String>> reactions) => jsonEncode(

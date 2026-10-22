@@ -347,3 +347,102 @@ func TestSearchAndProfile(t *testing.T) {
 		t.Fatalf("lookup: %+v", seen)
 	}
 }
+
+// Clearing a cloud chat hides its history from the one who cleared it, on
+// every device and every later sync, and from nobody else.
+func TestClearHistoryIsPersonal(t *testing.T) {
+	f := newAPI(t)
+	alice, bob := f.user("alice"), f.user("bob")
+	chat, _ := f.createChat(alice, map[string]any{"type": "direct", "mode": "cloud", "peer": bob.username})
+	id := uuid.MustParse(chat.ID)
+	send := func(body string) {
+		msg := &models.Message{ChatID: id, SenderID: alice.id, SenderDevID: uuid.New()}
+		cid := uuid.NewString()
+		msg.ClientID = &cid
+		if err := f.st.PersistCloudMessage(context.Background(), msg, []byte(body), ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send(`{"body":"old"}`)
+
+	if status := f.call(bob, "POST", "/v1/chats/"+chat.ID+"/clear", nil, nil); status != http.StatusOK {
+		t.Fatalf("clear: %d", status)
+	}
+	send(`{"body":"new"}`)
+
+	var page struct{ Messages []messageJSON }
+	f.call(bob, "GET", "/v1/chats/"+chat.ID+"/messages", nil, &page)
+	if len(page.Messages) != 1 || string(page.Messages[0].Payload) != `{"body":"new"}` {
+		t.Fatalf("bob's history after clearing: %+v", page.Messages)
+	}
+	f.call(bob, "GET", "/v1/chats/"+chat.ID+"/messages?after=0", nil, &page)
+	if len(page.Messages) != 1 {
+		t.Fatalf("bob's sync replays cleared rows: %d", len(page.Messages))
+	}
+	var seen chatJSON
+	f.call(bob, "GET", "/v1/chats/"+chat.ID, nil, &seen)
+	if seen.Unread != 1 || seen.ClearedSeq != 1 {
+		t.Fatalf("bob's chat: unread %d cleared %d", seen.Unread, seen.ClearedSeq)
+	}
+	f.call(alice, "GET", "/v1/chats/"+chat.ID+"/messages", nil, &page)
+	if len(page.Messages) != 2 {
+		t.Fatalf("clearing touched alice's history: %d", len(page.Messages))
+	}
+}
+
+// Deleting an account needs the password, ends every session, leaves every
+// group with a new epoch, frees the name -- and keeps the messages the
+// others already have.
+func TestDeleteAccount(t *testing.T) {
+	f := newAPI(t)
+	alice, bob := f.user("alice"), f.user("bob")
+	hash, err := auth.HashPassword("correct horse battery", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.st.DB().Model(&models.User{}).Where("id = ?", alice.id).Update("password_hash", hash)
+
+	direct, _ := f.createChat(alice, map[string]any{"type": "direct", "mode": "cloud", "peer": bob.username})
+	group, _ := f.createChat(bob, map[string]any{
+		"type": "group", "mode": "secret", "members": []string{alice.username},
+	})
+	msg := &models.Message{ChatID: uuid.MustParse(direct.ID), SenderID: alice.id, SenderDevID: uuid.New()}
+	cid := "from-alice"
+	msg.ClientID = &cid
+	if err := f.st.PersistCloudMessage(context.Background(), msg, []byte(`{"body":"на память"}`), ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if status := f.call(alice, "DELETE", "/v1/me", map[string]any{"password": "wrong password!"}, nil); status != http.StatusForbidden {
+		t.Fatalf("wrong password: %d", status)
+	}
+	if status := f.call(alice, "DELETE", "/v1/me", map[string]any{"password": "correct horse battery"}, nil); status != http.StatusNoContent {
+		t.Fatalf("delete: %d", status)
+	}
+
+	if status := f.call(alice, "GET", "/v1/me", nil, nil); status != http.StatusUnauthorized {
+		t.Fatalf("the deleted account's token still works: %d", status)
+	}
+	if _, err := f.st.UserByUsername(context.Background(), alice.username); err == nil {
+		t.Fatal("the name was not freed")
+	}
+	// Nobody can fetch keys for the account any more: no device is left
+	// to encrypt for.
+	if devices, _ := f.st.ActiveDevices(context.Background(), alice.id); len(devices) != 0 {
+		t.Fatalf("%d devices survived the deletion", len(devices))
+	}
+
+	var seen chatJSON
+	f.call(bob, "GET", "/v1/chats/"+group.ID, nil, &seen)
+	if len(seen.Members) != 1 || seen.Epoch <= group.Epoch {
+		t.Fatalf("group after deletion: %d members, epoch %d", len(seen.Members), seen.Epoch)
+	}
+	if !f.notifier.told(uuid.MustParse(group.ID), bob.id) {
+		t.Fatal("the group was not told")
+	}
+	var page struct{ Messages []messageJSON }
+	f.call(bob, "GET", "/v1/chats/"+direct.ID+"/messages", nil, &page)
+	if len(page.Messages) != 1 {
+		t.Fatalf("bob lost the deleted account's messages: %d", len(page.Messages))
+	}
+}

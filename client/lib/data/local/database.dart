@@ -24,7 +24,7 @@ class AppDatabase {
 
   final Database db;
 
-  static const int _schemaVersion = 3;
+  static const int _schemaVersion = 5;
 
   /// Opens the database, initialising the desktop FFI backend when needed.
   ///
@@ -117,6 +117,43 @@ class AppDatabase {
       await db.execute('ALTER TABLE messages ADD COLUMN edited_at INTEGER');
       await _createV3Tables(db);
     }
+    if (from < 4) await _addV4Columns(db);
+    if (from < 5) await _addSearchColumn(db, backfill: true);
+  }
+
+  /// Message text folded to lower case for search.
+  ///
+  /// SQLite's LIKE and lower() fold ASCII only, so "Привет" would never be
+  /// found by "привет". Dart folds every script; the folded copy is kept
+  /// next to the text and searched instead.
+  static Future<void> _addSearchColumn(Database db, {required bool backfill}) async {
+    await db.execute("ALTER TABLE messages ADD COLUMN search_text TEXT NOT NULL DEFAULT ''");
+    if (!backfill) return;
+    final rows = await db.query('messages', columns: ['id', 'body']);
+    final batch = db.batch();
+    for (final r in rows) {
+      batch.update(
+        'messages',
+        {'search_text': (r['body'] as String).toLowerCase()},
+        where: 'id = ?',
+        whereArgs: [r['id']],
+      );
+    }
+    await batch.commit(noResult: true);
+  }
+
+  /// This device's own arrangement of the chat list, and forwarded copies.
+  static Future<void> _addV4Columns(Database db) async {
+    for (final column in const [
+      "draft TEXT NOT NULL DEFAULT ''",
+      'pinned INTEGER NOT NULL DEFAULT 0',
+      'muted INTEGER NOT NULL DEFAULT 0',
+      'archived INTEGER NOT NULL DEFAULT 0',
+      'hidden INTEGER NOT NULL DEFAULT 0',
+    ]) {
+      await db.execute('ALTER TABLE chats ADD COLUMN $column');
+    }
+    await db.execute('ALTER TABLE messages ADD COLUMN forwarded_from TEXT');
   }
 
   /// Tables added in version 3, shared by fresh installs and upgrades.
@@ -228,6 +265,8 @@ class AppDatabase {
     ''');
 
     await _createV3Tables(db);
+    await _addV4Columns(db);
+    await _addSearchColumn(db, backfill: false);
   }
 
   Future<void> close() => db.close();

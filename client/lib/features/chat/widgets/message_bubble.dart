@@ -18,6 +18,8 @@ class MessageBubble extends StatelessWidget {
     this.senderName,
     this.onActions,
     this.onRetry,
+    this.quote,
+    this.onTapQuote,
     this.attachmentBuilder,
   });
 
@@ -37,6 +39,12 @@ class MessageBubble extends StatelessWidget {
 
   /// Sends a failed message again.
   final VoidCallback? onRetry;
+
+  /// The message this one answers: who wrote it and how it began.
+  final ({String author, String text})? quote;
+
+  /// Jumps to the quoted message.
+  final VoidCallback? onTapQuote;
 
   /// Renders the attachment, if any. Injected so the bubble stays a pure
   /// widget: download state and decryption belong to the screen above it.
@@ -104,6 +112,42 @@ class MessageBubble extends StatelessWidget {
                               ),
                             ),
                           ),
+                        if (message.forwardedFrom != null)
+                          Padding(
+                            padding: EdgeInsets.fromLTRB(
+                              message.attachment != null ? 8 : 0,
+                              message.attachment != null ? 4 : 0,
+                              0,
+                              4,
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.shortcut_rounded, size: 14, color: muted),
+                                const SizedBox(width: 4),
+                                Flexible(
+                                  child: Text(
+                                    AppLocalizations.of(context)
+                                        .forwardedFrom(message.forwardedFrom!),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontStyle: FontStyle.italic,
+                                      color: muted,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        if (quote != null)
+                          _Quote(
+                            author: quote!.author,
+                            text: quote!.text,
+                            outgoing: outgoing,
+                            onTap: onTapQuote,
+                          ),
                         if (message.attachment != null) ...[
                           attachmentBuilder?.call(message.attachment!) ??
                               const SizedBox.shrink(),
@@ -169,6 +213,60 @@ class MessageBubble extends StatelessWidget {
                   ),
               ],
             ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The answered message, shown in small type at the top of the reply.
+class _Quote extends StatelessWidget {
+  const _Quote({
+    required this.author,
+    required this.text,
+    required this.outgoing,
+    this.onTap,
+  });
+
+  final String author;
+  final String text;
+  final bool outgoing;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final pond = context.pond;
+    final line = outgoing ? pond.onBubbleOut : pond.accent;
+    final body = outgoing ? pond.onBubbleOutMuted : pond.inkMuted;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 5),
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(8, 3, 8, 3),
+          decoration: BoxDecoration(
+            color: line.withValues(alpha: 0.10),
+            borderRadius: BorderRadius.circular(6),
+            border: Border(left: BorderSide(color: line, width: 3)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                author,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: line),
+              ),
+              Text(
+                text,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 13, color: body),
+              ),
+            ],
           ),
         ),
       ),

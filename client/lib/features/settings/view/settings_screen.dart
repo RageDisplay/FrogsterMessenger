@@ -21,6 +21,10 @@ class SettingsScreen extends StatelessWidget {
     required this.onRevokeSession,
     required this.onSignOut,
     this.onChangePassword,
+    this.loadProfile,
+    this.onSaveProfile,
+    this.onDeleteAccount,
+    this.appVersion = '',
   });
 
   final Account account;
@@ -34,7 +38,17 @@ class SettingsScreen extends StatelessWidget {
 
   /// Called with true when the user chose to erase this device's identity.
   final void Function({required bool forget}) onSignOut;
-  final VoidCallback? onChangePassword;
+
+  /// Changes the password; throws when the current one is wrong.
+  final Future<void> Function(String current, String next)? onChangePassword;
+
+  final Future<UserProfile> Function()? loadProfile;
+  final Future<UserProfile> Function(String displayName, String bio)? onSaveProfile;
+
+  /// Closes the account for good; throws when the password is wrong.
+  final Future<void> Function(String password)? onDeleteAccount;
+
+  final String appVersion;
 
   @override
   Widget build(BuildContext context) {
@@ -48,36 +62,11 @@ class SettingsScreen extends StatelessWidget {
         builder: (context, _) => ListView(
           padding: const EdgeInsets.fromLTRB(16, 4, 16, 32),
           children: [
-            _Pad(
-              child: Row(
-                children: [
-                  LilyAvatar(
-                    seed: account.username,
-                    label: account.username,
-                    size: 60,
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          account.username,
-                          style: const TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          l10n.signedInAs(server),
-                          style: TextStyle(fontSize: 13, color: pond.inkMuted),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
+            _ProfileCard(
+              account: account,
+              server: server,
+              load: loadProfile,
+              save: onSaveProfile,
             ),
             _SectionTitle(l10n.appearance),
             _Pad(
@@ -133,6 +122,29 @@ class SettingsScreen extends StatelessWidget {
                 ],
               ),
             ),
+            _SectionTitle(l10n.notifications),
+            _Pad(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Column(
+                children: [
+                  SwitchListTile(
+                    secondary: const Icon(Icons.notifications_outlined),
+                    title: Text(l10n.notificationsShow),
+                    value: preferences.notifications,
+                    onChanged: preferences.setNotifications,
+                  ),
+                  SwitchListTile(
+                    secondary: const Icon(Icons.short_text_rounded),
+                    title: Text(l10n.notificationsPreview),
+                    subtitle: Text(l10n.notificationsPreviewHint),
+                    value: preferences.notificationPreview,
+                    onChanged: preferences.notifications
+                        ? preferences.setNotificationPreview
+                        : null,
+                  ),
+                ],
+              ),
+            ),
             _SectionTitle(l10n.security),
             _Pad(
               padding: const EdgeInsets.symmetric(vertical: 6),
@@ -143,7 +155,10 @@ class SettingsScreen extends StatelessWidget {
                       leading: const Icon(Icons.password_rounded),
                       title: Text(l10n.changePassword),
                       subtitle: Text(l10n.changePasswordHint),
-                      onTap: onChangePassword,
+                      onTap: () => showDialog<void>(
+                        context: context,
+                        builder: (_) => _ChangePasswordDialog(onSubmit: onChangePassword!),
+                      ),
                     ),
                   ListTile(
                     title: Text(
@@ -180,6 +195,43 @@ class SettingsScreen extends StatelessWidget {
                 ),
                 subtitle: Text(l10n.signOutHint),
                 onTap: () => _confirmSignOut(context),
+              ),
+            ),
+            if (onDeleteAccount != null) ...[
+              const SizedBox(height: 10),
+              _Pad(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: ListTile(
+                  leading: Icon(Icons.delete_forever_outlined, color: pond.danger),
+                  title: Text(l10n.deleteAccount, style: TextStyle(color: pond.danger)),
+                  subtitle: Text(l10n.deleteAccountHint),
+                  onTap: () => showDialog<void>(
+                    context: context,
+                    builder: (_) => _DeleteAccountDialog(onSubmit: onDeleteAccount!),
+                  ),
+                ),
+              ),
+            ],
+            _SectionTitle(l10n.about),
+            _Pad(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Column(
+                children: [
+                  ListTile(
+                    leading: const Icon(Icons.info_outline_rounded),
+                    title: Text(l10n.appTitle),
+                    subtitle: Text(l10n.appVersion(appVersion)),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.description_outlined),
+                    title: Text(l10n.licenses),
+                    onTap: () => showLicensePage(
+                      context: context,
+                      applicationName: l10n.appTitle,
+                      applicationVersion: appVersion,
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -255,6 +307,325 @@ class SettingsScreen extends StatelessWidget {
   }
 }
 
+/// The account at the top: name, how contacts see it, and editing it.
+class _ProfileCard extends StatefulWidget {
+  const _ProfileCard({
+    required this.account,
+    required this.server,
+    this.load,
+    this.save,
+  });
+
+  final Account account;
+  final String server;
+  final Future<UserProfile> Function()? load;
+  final Future<UserProfile> Function(String displayName, String bio)? save;
+
+  @override
+  State<_ProfileCard> createState() => _ProfileCardState();
+}
+
+class _ProfileCardState extends State<_ProfileCard> {
+  UserProfile? _profile;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.load?.call().then((p) {
+      if (mounted) setState(() => _profile = p);
+    }).catchError((Object _) {});
+  }
+
+  Future<void> _edit() async {
+    final save = widget.save;
+    if (save == null) return;
+    final l10n = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final result = await showDialog<(String, String)>(
+      context: context,
+      builder: (_) => _ProfileDialog(
+        displayName: _profile?.displayName ?? '',
+        bio: _profile?.bio ?? '',
+      ),
+    );
+    if (result == null) return;
+    final (displayName, about) = result;
+    try {
+      final saved = await save(displayName, about);
+      if (mounted) setState(() => _profile = saved);
+      messenger.showSnackBar(SnackBar(content: Text(l10n.profileSaved)));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(l10n.actionFailed('$e'))));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pond = context.pond;
+    final l10n = AppLocalizations.of(context);
+    final profile = _profile;
+    final shown = (profile?.displayName.isNotEmpty ?? false)
+        ? profile!.displayName
+        : widget.account.username;
+    return _Pad(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          LilyAvatar(seed: widget.account.username, label: shown, size: 60),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(shown, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+                Text('@${widget.account.username}', style: TextStyle(color: pond.inkMuted)),
+                if (profile != null && profile.bio.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(profile.bio, style: const TextStyle(fontSize: 14, height: 1.35)),
+                ],
+                const SizedBox(height: 4),
+                Text(
+                  l10n.signedInAs(widget.server),
+                  style: TextStyle(fontSize: 12, color: pond.inkMuted),
+                ),
+              ],
+            ),
+          ),
+          if (widget.save != null)
+            IconButton(
+              tooltip: l10n.editProfile,
+              onPressed: _edit,
+              icon: const Icon(Icons.edit_outlined),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Name and bio. Owns its text controllers: disposing them as soon as the
+/// dialog returns would pull them from under its closing animation.
+class _ProfileDialog extends StatefulWidget {
+  const _ProfileDialog({required this.displayName, required this.bio});
+
+  final String displayName;
+  final String bio;
+
+  @override
+  State<_ProfileDialog> createState() => _ProfileDialogState();
+}
+
+class _ProfileDialogState extends State<_ProfileDialog> {
+  late final _name = TextEditingController(text: widget.displayName);
+  late final _bio = TextEditingController(text: widget.bio);
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _bio.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    return AlertDialog(
+      title: Text(l10n.editProfile),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: _name,
+            maxLength: 64,
+            decoration: InputDecoration(
+              labelText: l10n.displayNameLabel,
+              helperText: l10n.displayNameHint,
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _bio,
+            maxLength: 140,
+            maxLines: 3,
+            minLines: 1,
+            decoration: InputDecoration(labelText: l10n.bioLabel),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(l10n.cancel),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop((_name.text.trim(), _bio.text.trim())),
+          child: Text(l10n.save),
+        ),
+      ],
+    );
+  }
+}
+
+class _ChangePasswordDialog extends StatefulWidget {
+  const _ChangePasswordDialog({required this.onSubmit});
+
+  final Future<void> Function(String current, String next) onSubmit;
+
+  @override
+  State<_ChangePasswordDialog> createState() => _ChangePasswordDialogState();
+}
+
+class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
+  final _current = TextEditingController();
+  final _next = TextEditingController();
+  final _repeat = TextEditingController();
+  var _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _current.dispose();
+    _next.dispose();
+    _repeat.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final l10n = AppLocalizations.of(context);
+    if (_next.text.length < 10) return setState(() => _error = l10n.passwordTooShort);
+    if (_next.text != _repeat.text) return setState(() => _error = l10n.passwordsDiffer);
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await widget.onSubmit(_current.text, _next.text);
+      navigator.pop();
+      messenger.showSnackBar(SnackBar(content: Text(l10n.passwordChanged)));
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _error = '$e'.contains('403') ? l10n.passwordWrong : l10n.actionFailed('$e');
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    InputDecoration field(String label) => InputDecoration(labelText: label);
+    return AlertDialog(
+      title: Text(l10n.changePassword),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(controller: _current, obscureText: true, decoration: field(l10n.currentPassword)),
+          const SizedBox(height: 8),
+          TextField(controller: _next, obscureText: true, decoration: field(l10n.newPassword)),
+          const SizedBox(height: 8),
+          TextField(controller: _repeat, obscureText: true, decoration: field(l10n.repeatPassword)),
+          if (_error != null) ...[
+            const SizedBox(height: 10),
+            Text(_error!, style: TextStyle(color: context.pond.danger)),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: _busy ? null : () => Navigator.of(context).pop(),
+          child: Text(l10n.cancel),
+        ),
+        FilledButton(
+          onPressed: _busy ? null : _submit,
+          child: Text(l10n.save),
+        ),
+      ],
+    );
+  }
+}
+
+class _DeleteAccountDialog extends StatefulWidget {
+  const _DeleteAccountDialog({required this.onSubmit});
+
+  final Future<void> Function(String password) onSubmit;
+
+  @override
+  State<_DeleteAccountDialog> createState() => _DeleteAccountDialogState();
+}
+
+class _DeleteAccountDialogState extends State<_DeleteAccountDialog> {
+  final _password = TextEditingController();
+  var _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _password.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final l10n = AppLocalizations.of(context);
+    final navigator = Navigator.of(context);
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await widget.onSubmit(_password.text);
+      navigator.pop();
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _error = '$e'.contains('403') ? l10n.passwordWrong : l10n.actionFailed('$e');
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    final pond = context.pond;
+    return AlertDialog(
+      title: Text(l10n.deleteAccountTitle),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(l10n.deleteAccountBody, style: const TextStyle(height: 1.4)),
+          const SizedBox(height: 14),
+          TextField(
+            controller: _password,
+            obscureText: true,
+            decoration: InputDecoration(labelText: l10n.passwordLabel),
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 10),
+            Text(_error!, style: TextStyle(color: pond.danger)),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: _busy ? null : () => Navigator.of(context).pop(),
+          child: Text(l10n.cancel),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: pond.danger),
+          onPressed: _busy ? null : _submit,
+          child: Text(l10n.deleteAccountConfirm),
+        ),
+      ],
+    );
+  }
+}
+
 /// A lily pad: the rounded card every settings group sits on.
 class _Pad extends StatelessWidget {
   const _Pad({
@@ -267,13 +638,13 @@ class _Pad extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: padding,
-      decoration: BoxDecoration(
-        color: context.pond.lily,
-        borderRadius: BorderRadius.circular(PondRadii.card),
-      ),
-      child: child,
+    // A Material rather than a decorated box: list tiles paint their ink on
+    // the nearest Material, and a coloured box above it would hide the ink.
+    return Material(
+      color: context.pond.lily,
+      borderRadius: BorderRadius.circular(PondRadii.card),
+      clipBehavior: Clip.antiAlias,
+      child: Padding(padding: padding, child: child),
     );
   }
 }

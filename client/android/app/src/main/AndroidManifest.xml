@@ -4,9 +4,11 @@
          The failure is silent: every request fails as "could not reach the
          server" while the same address answers from a shell on the phone. -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Android 13+ asks before an app may show notifications. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
 
     <application
-        android:label="frogster"
+        android:label="Frogster"
         android:name="${applicationName}"
         android:networkSecurityConfig="@xml/network_security_config"
         android:icon="@mipmap/ic_launcher">

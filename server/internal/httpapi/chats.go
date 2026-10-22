@@ -54,6 +54,7 @@ type chatJSON struct {
 	LastSeq     int64        `json:"last_seq"`
 	LastReadSeq int64        `json:"last_read_seq"`
 	PeerReadSeq int64        `json:"peer_read_seq"`
+	ClearedSeq  int64        `json:"cleared_seq,omitempty"`
 	Unread      int64        `json:"unread"`
 	Members     []memberJSON `json:"members"`
 	Last        *messageJSON `json:"last,omitempty"`
@@ -85,6 +86,7 @@ func (s *Server) chatJSON(c *store.ChatSummary) chatJSON {
 		LastSeq:     c.LastSeq,
 		LastReadSeq: c.LastReadSeq,
 		PeerReadSeq: c.PeerReadSeq,
+		ClearedSeq:  c.ClearedSeq,
 		Unread:      c.Unread,
 		Members:     make([]memberJSON, 0, len(c.Members)),
 		CreatedAt:   c.CreatedAt,
@@ -385,12 +387,17 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	floor, err := s.store.ClearedSeq(r.Context(), chat.ID, claims.UserID)
+	if err != nil {
+		s.log.Error("cleared seq", "err", err, "chat_id", chat.ID)
+		writeErr(w, http.StatusInternalServerError, "internal error", s.log)
+		return
+	}
 	var msgs []store.CloudMessage
-	var err error
 	if q.Has("after") {
-		msgs, err = s.store.CloudSince(r.Context(), chat.ID, after, limit)
+		msgs, err = s.store.CloudSince(r.Context(), chat.ID, floor, after, limit)
 	} else {
-		msgs, err = s.store.CloudHistory(r.Context(), chat.ID, before, limit)
+		msgs, err = s.store.CloudHistory(r.Context(), chat.ID, floor, before, limit)
 	}
 	if err != nil {
 		s.log.Error("chat messages", "err", err, "chat_id", chat.ID)
@@ -610,6 +617,26 @@ func (s *Server) handleLeaveChat(w http.ResponseWriter, r *http.Request) {
 	}
 	s.notifyMembers(r, chat.ID, epoch, claims.UserID)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleClearChat clears a cloud chat's history for the caller alone.
+// Everyone else keeps theirs; a secret chat's history was never here.
+func (s *Server) handleClearChat(w http.ResponseWriter, r *http.Request) {
+	claims, ok := claimsOrUnauthorized(w, r, s)
+	if !ok {
+		return
+	}
+	chat, ok := s.memberChat(w, r, claims.UserID)
+	if !ok {
+		return
+	}
+	pos, err := s.store.ClearHistory(r.Context(), chat.ID, claims.UserID)
+	if err != nil {
+		s.log.Error("clear chat", "err", err, "chat_id", chat.ID)
+		writeErr(w, http.StatusInternalServerError, "internal error", s.log)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"cleared_seq": pos}, s.log)
 }
 
 // notifyMembers tells a chat's current members, and anyone named in extra,

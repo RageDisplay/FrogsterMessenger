@@ -70,6 +70,14 @@ class ReadUpdate {
   final int seq;
 }
 
+/// Someone is typing in a chat.
+class TypingNotice {
+  const TypingNotice(this.chatId, this.userId);
+
+  final String chatId;
+  final String userId;
+}
+
 /// Placeholders the chat list shows for messages without text, rendered in
 /// the user's language by the UI.
 class PreviewTokens {
@@ -87,14 +95,14 @@ class MessageRepository {
     required DeviceResolver resolver,
     required ApiClient api,
     required Account account,
-  })  : _crypto = crypto,
-        _ws = ws,
-        _dao = dao,
-        _outbox = outbox,
-        _groups = groups,
-        _resolver = resolver,
-        _api = api,
-        _account = account {
+  }) : _crypto = crypto,
+       _ws = ws,
+       _dao = dao,
+       _outbox = outbox,
+       _groups = groups,
+       _resolver = resolver,
+       _api = api,
+       _account = account {
     // Frames are handled strictly one at a time, in arrival order. An async
     // listener alone would start the next frame at the first await: an
     // offline flush delivering a burst would then interleave the dedup check
@@ -102,10 +110,12 @@ class MessageRepository {
     // frames (a sender key and the message after it, a message and its ack)
     // would race.
     _subscription = _ws.envelopes
-        .asyncMap((envelope) => _onEnvelope(envelope).catchError(
-              // ignore: avoid_print
-              (Object e) => print('[frogster] dropping frame: $e'),
-            ))
+        .asyncMap(
+          (envelope) => _onEnvelope(envelope).catchError(
+            // ignore: avoid_print
+            (Object e) => print('[frogster] dropping frame: $e'),
+          ),
+        )
         .listen((_) {});
 
     // A fresh connection replays what never got an answer, then catches up
@@ -118,10 +128,12 @@ class MessageRepository {
     // an automatic re-handshake is exactly what a key-substitution attack also
     // looks like, so it is reported even though nothing failed.
     _identityChangeSub = _crypto.identityChanges.listen((notice) {
-      _identityAlerts.add(IdentityChangeAlert(
-        peer: notice.peer,
-        chatId: _lastChatForPeer[notice.peer.key] ?? '',
-      ));
+      _identityAlerts.add(
+        IdentityChangeAlert(
+          peer: notice.peer,
+          chatId: _lastChatForPeer[notice.peer.key] ?? '',
+        ),
+      );
     });
   }
 
@@ -147,6 +159,8 @@ class MessageRepository {
   final _removed = StreamController<Message>.broadcast();
   final _chatUpdates = StreamController<String>.broadcast();
   final _reads = StreamController<ReadUpdate>.broadcast();
+  final _typing = StreamController<TypingNotice>.broadcast();
+  final _arrivals = StreamController<Message>.broadcast();
   final _identityAlerts = StreamController<IdentityChangeAlert>.broadcast();
   final _decryptFailures = StreamController<DecryptFailure>.broadcast();
 
@@ -161,6 +175,13 @@ class MessageRepository {
 
   /// Other members read further.
   Stream<ReadUpdate> get reads => _reads.stream;
+
+  /// Messages from others that just arrived, as they arrive: what
+  /// notifications are made of. History fetched in a sync is not here.
+  Stream<Message> get arrivals => _arrivals.stream;
+
+  /// Someone started or kept typing. Each notice holds for a few seconds.
+  Stream<TypingNotice> get typing => _typing.stream;
 
   /// Peers whose identity key changed.
   Stream<IdentityChangeAlert> get identityAlerts => _identityAlerts.stream;
@@ -182,6 +203,7 @@ class MessageRepository {
     required String body,
     String? replyToId,
     AttachmentPayload? attachment,
+    String? forwardedFrom,
   }) async {
     final message = Message(
       id: _newId(),
@@ -194,9 +216,11 @@ class MessageRepository {
       status: MessageStatus.pending,
       replyToId: replyToId,
       attachment: attachment,
+      forwardedFrom: forwardedFrom,
     );
 
     await _dao.upsertMessage(message);
+    await _dao.setDraft(chatId, '');
     await _dao.touchChat(chatId, previewOf(body, attachment), message.sentAt);
     _messages.add(message);
     _chatUpdates.add(chatId);
@@ -225,7 +249,12 @@ class MessageRepository {
 
     await _dispatch(
       message.chatId,
-      MessagePayload(kind: PayloadKind.edit, targetId: message.id, body: body, sentAt: now),
+      MessagePayload(
+        kind: PayloadKind.edit,
+        targetId: message.id,
+        body: body,
+        sentAt: now,
+      ),
       _newId(),
     );
   }
@@ -275,7 +304,11 @@ class MessageRepository {
     await _dispatch(
       chatId,
       MessagePayload(
-        reaction: ReactionPayload(targetId: targetId, emoji: emoji, remove: remove),
+        reaction: ReactionPayload(
+          targetId: targetId,
+          emoji: emoji,
+          remove: remove,
+        ),
       ),
       _newId(),
     );
@@ -285,15 +318,101 @@ class MessageRepository {
   Future<void> renameSecretGroup(String chatId, String title) async {
     await _dao.setTitle(chatId, title);
     _chatUpdates.add(chatId);
-    await _dispatch(chatId, MessagePayload(kind: PayloadKind.meta, title: title), _newId());
+    await _dispatch(
+      chatId,
+      MessagePayload(kind: PayloadKind.meta, title: title),
+      _newId(),
+    );
   }
 
+  /// Sends a copy of [message] to another chat, naming its original author.
+  ///
+  /// The attachment travels by reference: the copy carries the same blob id
+  /// and key. Forwarding from a secret chat into a cloud one therefore hands
+  /// the file's key to the server -- which is what forwarding there means.
+  Future<Message> forward(
+    Message message,
+    String toChatId, {
+    required String authorName,
+  }) => send(
+    chatId: toChatId,
+    body: message.body,
+    attachment: message.attachment,
+    forwardedFrom: message.forwardedFrom ?? authorName,
+  );
+
   MessagePayload _payloadFor(Message message) => MessagePayload(
-        body: message.body,
-        replyToId: message.replyToId,
-        attachment: message.attachment,
-        sentAt: message.sentAt,
+    body: message.body,
+    replyToId: message.replyToId,
+    attachment: message.attachment,
+    sentAt: message.sentAt,
+    forwardedFrom: message.forwardedFrom,
+  );
+
+  /// When each chat last told the others we are typing.
+  final Map<String, DateTime> _typingSent = {};
+
+  /// Tells the chat we are typing, at most every few seconds however fast
+  /// the keys go.
+  void typingIn(String chatId) {
+    final last = _typingSent[chatId];
+    final now = DateTime.now();
+    if (last != null && now.difference(last) < const Duration(seconds: 4)) {
+      return;
+    }
+    _typingSent[chatId] = now;
+    _ws.trySend(Envelope(type: EnvelopeType.typing, chatId: chatId));
+  }
+
+  // ------------------------------------------------- this device's list
+
+  Future<void> saveDraft(String chatId, String draft) async {
+    await _dao.setDraft(chatId, draft);
+    _chatUpdates.add(chatId);
+  }
+
+  Future<void> setPinned(String chatId, bool value) =>
+      _changeList(chatId, () => _dao.setPinned(chatId, value));
+  Future<void> setMuted(String chatId, bool value) =>
+      _changeList(chatId, () => _dao.setMuted(chatId, value));
+  Future<void> setArchived(String chatId, bool value) =>
+      _changeList(chatId, () => _dao.setArchived(chatId, value));
+
+  Future<void> _changeList(
+    String chatId,
+    Future<void> Function() change,
+  ) async {
+    await change();
+    _chatUpdates.add(chatId);
+  }
+
+  /// Removes a direct chat from the list and its history from this device.
+  ///
+  /// A cloud chat's history is also cleared for us on the server, or the
+  /// next sync would bring it back; the other side keeps theirs. The chat
+  /// returns to the list when a new message arrives.
+  Future<void> deleteDirectChat(String chatId) async {
+    final chat = await _dao.chatById(chatId);
+    if (chat == null) return;
+    if (chat.isCloud) {
+      await _api.clearChat(chatId);
+      await _dao.setSyncedSeq(
+        chatId,
+        await _remoteLastSeq(chatId) ?? chat.syncedSeq,
       );
+    }
+    await _dao.clearMessages(chatId);
+    await _dao.setHidden(chatId, true);
+    _chatUpdates.add(chatId);
+  }
+
+  Future<int?> _remoteLastSeq(String chatId) async {
+    try {
+      return (await _api.getChat(chatId)).lastSeq;
+    } on ApiException {
+      return null;
+    }
+  }
 
   Future<void> _sendOrFail(Message message, MessagePayload payload) async {
     try {
@@ -337,7 +456,11 @@ class MessageRepository {
         _ws.trySend(frame);
       });
 
-  Future<Envelope> _buildFrame(Chat chat, MessagePayload payload, String id) async {
+  Future<Envelope> _buildFrame(
+    Chat chat,
+    MessagePayload payload,
+    String id,
+  ) async {
     if (chat.isCloud) return _cloudFrame(chat, payload, id);
     if (chat.isGroup) return _groupFrame(chat, payload, id);
     return _directFrame(chat, payload, id);
@@ -351,9 +474,9 @@ class MessageRepository {
       PayloadKind.edit => ('edit', null),
       PayloadKind.delete => ('delete', null),
       PayloadKind.reaction => (
-          payload.reaction!.remove ? 'unreact' : 'react',
-          payload.reaction!.emoji,
-        ),
+        payload.reaction!.remove ? 'unreact' : 'react',
+        payload.reaction!.emoji,
+      ),
       _ => ('', null),
     };
     final target = payload.kind == PayloadKind.reaction
@@ -379,7 +502,11 @@ class MessageRepository {
   /// its own ratchet, so a shared ciphertext would be undecryptable for every
   /// device but one. The peer's other devices and our own both appear here,
   /// which is what keeps a multi-device account in sync.
-  Future<Envelope> _directFrame(Chat chat, MessagePayload payload, String id) async {
+  Future<Envelope> _directFrame(
+    Chat chat,
+    MessagePayload payload,
+    String id,
+  ) async {
     final peerUsername = chat.peerUsername;
     if (peerUsername == null) throw StateError('chat ${chat.id} has no peer');
 
@@ -407,20 +534,24 @@ class MessageRepository {
       _lastChatForPeer[device.address.key] = chatId;
       try {
         final encrypted = await _crypto.encrypt(device.address, plaintext);
-        entries.add(DevicePayloadWire(
-          userId: device.address.userId,
-          deviceId: device.address.deviceId,
-          cipherType: encrypted.cipherType,
-          ciphertext: base64Encode(_wireBody(encrypted)),
-        ));
+        entries.add(
+          DevicePayloadWire(
+            userId: device.address.userId,
+            deviceId: device.address.deviceId,
+            cipherType: encrypted.cipherType,
+            ciphertext: base64Encode(_wireBody(encrypted)),
+          ),
+        );
       } on IdentityChangedException {
         // Only reachable in strict mode; the default policy rebuilds the
         // session instead and reports it on the engine's stream.
-        _identityAlerts.add(IdentityChangeAlert(
-          peer: device.address,
-          chatId: chatId,
-          blocksSending: true,
-        ));
+        _identityAlerts.add(
+          IdentityChangeAlert(
+            peer: device.address,
+            chatId: chatId,
+            blocksSending: true,
+          ),
+        );
         rethrow;
       }
     }
@@ -429,9 +560,17 @@ class MessageRepository {
 
   /// A secret group's frame: one ciphertext under our sender key, after
   /// making sure every member device has that key.
-  Future<Envelope> _groupFrame(Chat chat, MessagePayload payload, String id) async {
+  Future<Envelope> _groupFrame(
+    Chat chat,
+    MessagePayload payload,
+    String id,
+  ) async {
     await _shareSenderKey(chat);
-    final ciphertext = await _groups.encrypt(chat.id, chat.epoch, payload.encode());
+    final ciphertext = await _groups.encrypt(
+      chat.id,
+      chat.epoch,
+      payload.encode(),
+    );
     return Envelope(
       type: EnvelopeType.message,
       id: id,
@@ -457,7 +596,8 @@ class MessageRepository {
   Future<void> _shareSenderKey(Chat chat) async {
     final key = '${chat.id}@${chat.epoch}';
     final checked = _sharesCheckedAt[key];
-    if (checked != null && DateTime.now().difference(checked) < _shareCheckTtl) {
+    if (checked != null &&
+        DateTime.now().difference(checked) < _shareCheckTtl) {
       return;
     }
 
@@ -469,7 +609,10 @@ class MessageRepository {
     final missing = await _groups.unshared(chat.id, chat.epoch, byId.keys);
 
     if (missing.isNotEmpty) {
-      final skdm = (await _groups.distribution(chat.id, chat.epoch)).serialize();
+      final skdm = (await _groups.distribution(
+        chat.id,
+        chat.epoch,
+      )).serialize();
       final targets = [for (final id in missing) byId[id]!];
       final frameId = _newId();
       final frame = Envelope(
@@ -490,19 +633,34 @@ class MessageRepository {
   // ------------------------------------------------------------ history
 
   /// A page of local history, oldest first.
-  Future<List<Message>> history(String chatId, {int? beforeSeq, int limit = 50}) =>
-      _dao.messagesForChat(chatId, beforeSeq: beforeSeq, limit: limit);
+  Future<List<Message>> history(
+    String chatId, {
+    int? beforeSeq,
+    int limit = 50,
+  }) => _dao.messagesForChat(chatId, beforeSeq: beforeSeq, limit: limit);
 
   /// Older messages than [beforeSeq]. A cloud chat's history may reach
   /// further back on the server than on this device -- always, on a new
   /// one -- so when the local copy runs out, the server is asked.
-  Future<List<Message>> loadOlder(String chatId, int beforeSeq, {int limit = 50}) async {
-    final local = await _dao.messagesForChat(chatId, beforeSeq: beforeSeq, limit: limit);
+  Future<List<Message>> loadOlder(
+    String chatId,
+    int beforeSeq, {
+    int limit = 50,
+  }) async {
+    final local = await _dao.messagesForChat(
+      chatId,
+      beforeSeq: beforeSeq,
+      limit: limit,
+    );
     if (local.isNotEmpty) return local;
 
     final chat = await _dao.chatById(chatId);
     if (chat == null || !chat.isCloud || beforeSeq <= 1) return const [];
-    final remote = await _api.chatMessages(chatId, before: beforeSeq, limit: limit);
+    final remote = await _api.chatMessages(
+      chatId,
+      before: beforeSeq,
+      limit: limit,
+    );
     for (final row in remote) {
       await _storeHistoryRow(chat, row);
     }
@@ -544,7 +702,8 @@ class MessageRepository {
   /// Runs on every connection: anything that happened while this device was
   /// away -- new chats, renamed groups, messages in cloud chats, how far the
   /// others have read -- is learned here.
-  Future<void> sync() => _syncing ??= _sync().whenComplete(() => _syncing = null);
+  Future<void> sync() =>
+      _syncing ??= _sync().whenComplete(() => _syncing = null);
 
   Future<void> _sync() async {
     final remote = await _api.listChats();
@@ -558,7 +717,9 @@ class MessageRepository {
     // Groups this device still lists but the server no longer does: we
     // left, or were removed, while away.
     for (final local in await _dao.chats()) {
-      if (local.isGroup && !present.contains(local.id)) await _forgetChat(local.id);
+      if (local.isGroup && !present.contains(local.id)) {
+        await _forgetChat(local.id);
+      }
     }
   }
 
@@ -607,7 +768,9 @@ class MessageRepository {
       _sharesCheckedAt.removeWhere((key, _) => key.startsWith('${chat.id}@'));
     }
     await _dao.upsertChat(chat);
-    if (chat.peerReadSeq > 0) await _dao.markOutgoingRead(chat.id, chat.peerReadSeq);
+    if (chat.peerReadSeq > 0) {
+      await _dao.markOutgoingRead(chat.id, chat.peerReadSeq);
+    }
     return chat;
   }
 
@@ -635,10 +798,16 @@ class MessageRepository {
       synced = lastSeq;
     } else {
       while (synced < lastSeq) {
-        final rows = await _api.chatMessages(chat.id, after: synced, limit: 200);
+        final rows = await _api.chatMessages(
+          chat.id,
+          after: synced,
+          limit: 200,
+        );
         if (rows.isEmpty) break;
         for (final row in rows) {
-          final payload = row.payload == null ? null : _decodePayload(row.payload!);
+          final payload = row.payload == null
+              ? null
+              : _decodePayload(row.payload!);
           if (payload != null) {
             await _apply(
               chat,
@@ -666,23 +835,26 @@ class MessageRepository {
     if (payload == null) return;
     final existing = await _dao.messageById(row.id);
     final own = row.senderId == _account.userId;
-    await _dao.upsertMessage(Message(
-      id: row.id,
-      chatId: chat.id,
-      senderId: row.senderId,
-      senderDeviceId: row.senderDeviceId,
-      body: payload.body,
-      sentAt: payload.sentAt ?? row.timestamp,
-      isOutgoing: own,
-      seq: row.seq,
-      status: own && row.seq <= chat.peerReadSeq
-          ? MessageStatus.read
-          : (own ? MessageStatus.sent : MessageStatus.delivered),
-      replyToId: payload.replyToId,
-      attachment: payload.attachment,
-      reactions: row.reactions,
-      editedAt: row.editedAt ?? existing?.editedAt,
-    ));
+    await _dao.upsertMessage(
+      Message(
+        id: row.id,
+        chatId: chat.id,
+        senderId: row.senderId,
+        senderDeviceId: row.senderDeviceId,
+        body: payload.body,
+        sentAt: payload.sentAt ?? row.timestamp,
+        isOutgoing: own,
+        seq: row.seq,
+        status: own && row.seq <= chat.peerReadSeq
+            ? MessageStatus.read
+            : (own ? MessageStatus.sent : MessageStatus.delivered),
+        replyToId: payload.replyToId,
+        attachment: payload.attachment,
+        reactions: row.reactions,
+        editedAt: row.editedAt ?? existing?.editedAt,
+        forwardedFrom: payload.forwardedFrom,
+      ),
+    );
   }
 
   // ------------------------------------------------------------ receiving
@@ -709,6 +881,12 @@ class MessageRepository {
         await _onError(envelope);
       case EnvelopeType.read:
         await _onRead(envelope);
+      case EnvelopeType.typing:
+        final chatId = envelope.chatId;
+        final userId = envelope.senderUserId;
+        if (chatId != null && userId != null && userId != _account.userId) {
+          _typing.add(TypingNotice(chatId, userId));
+        }
       case EnvelopeType.chatUpdated:
         final chatId = envelope.chatId;
         if (chatId != null) await refreshChat(chatId);
@@ -753,7 +931,8 @@ class MessageRepository {
 
     final peer = PeerAddress(userId: senderId, deviceId: senderDeviceId);
     try {
-      var chat = await _dao.chatById(chatId) ?? await _discoverChat(chatId, senderId);
+      var chat =
+          await _dao.chatById(chatId) ?? await _discoverChat(chatId, senderId);
       if (chat == null) return true;
 
       final Uint8List plaintext;
@@ -780,13 +959,16 @@ class MessageRepository {
             serialized: serialized,
           );
         } on MissingSenderKeyException {
-          _awaitingKey.putIfAbsent('$chatId:$senderDeviceId', () => []).add(envelope);
+          _awaitingKey
+              .putIfAbsent('$chatId:$senderDeviceId', () => [])
+              .add(envelope);
           return false;
         }
       } else {
         _lastChatForPeer[peer.key] = chatId;
         final payload = EncryptedPayload.fromJson(
-          jsonDecode(utf8.decode(base64Decode(ciphertext))) as Map<String, dynamic>,
+          jsonDecode(utf8.decode(base64Decode(ciphertext)))
+              as Map<String, dynamic>,
         );
         plaintext = await _crypto.decrypt(peer, payload);
       }
@@ -810,15 +992,19 @@ class MessageRepository {
       // text. It is reported, though: silently swallowing this turns "my
       // messages never arrive" into a problem with no evidence anywhere.
       // Identifiers and the error only -- never the payload.
-      _decryptFailures.add(DecryptFailure(
-        peer: peer,
-        chatId: chatId,
-        error: error,
-        stackTrace: stack,
-      ));
+      _decryptFailures.add(
+        DecryptFailure(
+          peer: peer,
+          chatId: chatId,
+          error: error,
+          stackTrace: stack,
+        ),
+      );
       // ignore: avoid_print
-      print('[frogster] could not read a message from $senderId/$senderDeviceId '
-          'in chat $chatId: $error');
+      print(
+        '[frogster] could not read a message from $senderId/$senderDeviceId '
+        'in chat $chatId: $error',
+      );
     }
     return true;
   }
@@ -872,7 +1058,9 @@ class MessageRepository {
       case PayloadKind.meta:
         // A secret group's name; a cloud group's comes from the server.
         final title = payload.title?.trim();
-        if (!chat.isGroup || !chat.isSecret || title == null || title.isEmpty) return;
+        if (!chat.isGroup || !chat.isSecret || title == null || title.isEmpty) {
+          return;
+        }
         if (!(chat.member(senderId)?.isAdmin ?? false)) return;
         await _dao.setTitle(chat.id, title);
         _chatUpdates.add(chat.id);
@@ -904,6 +1092,7 @@ class MessageRepository {
           status: own ? MessageStatus.sent : MessageStatus.delivered,
           replyToId: payload.replyToId,
           attachment: payload.attachment,
+          forwardedFrom: payload.forwardedFrom,
         );
         await _dao.upsertMessage(message);
         // A message we sent from another device is already read: counting
@@ -916,6 +1105,7 @@ class MessageRepository {
         );
         _messages.add(message);
         _chatUpdates.add(chat.id);
+        if (countUnread && !own) _arrivals.add(message);
     }
   }
 
@@ -943,7 +1133,12 @@ class MessageRepository {
     if (peerUsername == null && !own) {
       peerUsername = await _resolver.lookupUsername(senderId);
     }
-    final chat = Chat(id: chatId, type: 'direct', epoch: 0, peerUsername: peerUsername);
+    final chat = Chat(
+      id: chatId,
+      type: 'direct',
+      epoch: 0,
+      peerUsername: peerUsername,
+    );
     await _dao.upsertChat(chat);
     return chat;
   }
@@ -954,7 +1149,9 @@ class MessageRepository {
   Future<void> _advanceSynced(String chatId, int? seq) async {
     if (seq == null) return;
     final chat = await _dao.chatById(chatId);
-    if (chat != null && seq == chat.syncedSeq + 1) await _dao.setSyncedSeq(chatId, seq);
+    if (chat != null && seq == chat.syncedSeq + 1) {
+      await _dao.setSyncedSeq(chatId, seq);
+    }
   }
 
   /// A member's sender key, sealed in our pairwise session with them.
@@ -963,25 +1160,31 @@ class MessageRepository {
     final senderId = envelope.senderUserId;
     final senderDeviceId = envelope.senderDeviceId;
     final ciphertext = envelope.ciphertext;
-    if (chatId == null || senderId == null || senderDeviceId == null || ciphertext == null) {
+    if (chatId == null ||
+        senderId == null ||
+        senderDeviceId == null ||
+        ciphertext == null) {
       return;
     }
     final peer = PeerAddress(userId: senderId, deviceId: senderDeviceId);
     try {
       final payload = EncryptedPayload.fromJson(
-        jsonDecode(utf8.decode(base64Decode(ciphertext))) as Map<String, dynamic>,
+        jsonDecode(utf8.decode(base64Decode(ciphertext)))
+            as Map<String, dynamic>,
       );
       final skdm = SenderKeyDistributionMessage.deserialize(
         await _crypto.decrypt(peer, payload),
       );
       await _groups.install(skdm, chatId: chatId, fromDeviceId: senderDeviceId);
     } catch (error, stack) {
-      _decryptFailures.add(DecryptFailure(
-        peer: peer,
-        chatId: chatId,
-        error: error,
-        stackTrace: stack,
-      ));
+      _decryptFailures.add(
+        DecryptFailure(
+          peer: peer,
+          chatId: chatId,
+          error: error,
+          stackTrace: stack,
+        ),
+      );
       return;
     }
 
@@ -1005,7 +1208,9 @@ class MessageRepository {
     if (updated != null) _messages.add(updated);
 
     final chat = await _dao.chatById(message.chatId);
-    if (chat != null && chat.isCloud) await _advanceSynced(chat.id, envelope.seq);
+    if (chat != null && chat.isCloud) {
+      await _advanceSynced(chat.id, envelope.seq);
+    }
   }
 
   /// The server refused a frame.
@@ -1060,7 +1265,9 @@ class MessageRepository {
       return;
     }
     await _dao.raisePeerReadSeq(chatId, seq);
-    if (await _dao.markOutgoingRead(chatId, seq) > 0) _reads.add(ReadUpdate(chatId, seq));
+    if (await _dao.markOutgoingRead(chatId, seq) > 0) {
+      _reads.add(ReadUpdate(chatId, seq));
+    }
   }
 
   /// A contact registered a new device, or replaced an existing one.
@@ -1082,10 +1289,12 @@ class MessageRepository {
     // Any group with them may now have a device without our sender key.
     _sharesCheckedAt.clear();
 
-    _identityAlerts.add(IdentityChangeAlert(
-      peer: PeerAddress(userId: userId, deviceId: deviceId),
-      chatId: envelope.chatId ?? '',
-    ));
+    _identityAlerts.add(
+      IdentityChangeAlert(
+        peer: PeerAddress(userId: userId, deviceId: deviceId),
+        chatId: envelope.chatId ?? '',
+      ),
+    );
   }
 
   /// One of our *own* devices was added: a second desktop, a replaced phone.
@@ -1140,8 +1349,10 @@ class MessageRepository {
     if (_unacknowledged.length >= _maxAckBatch) {
       _flushAcknowledgements();
     } else {
-      _ackTimer ??=
-          Timer(const Duration(milliseconds: 300), _flushAcknowledgements);
+      _ackTimer ??= Timer(
+        const Duration(milliseconds: 300),
+        _flushAcknowledgements,
+      );
     }
   }
 
@@ -1149,10 +1360,9 @@ class MessageRepository {
     _ackTimer?.cancel();
     _ackTimer = null;
     if (_unacknowledged.isEmpty) return;
-    _ws.send(Envelope(
-      type: EnvelopeType.delivered,
-      ids: List.of(_unacknowledged),
-    ));
+    _ws.send(
+      Envelope(type: EnvelopeType.delivered, ids: List.of(_unacknowledged)),
+    );
     _unacknowledged.clear();
   }
 
@@ -1165,6 +1375,8 @@ class MessageRepository {
     await _removed.close();
     await _chatUpdates.close();
     await _reads.close();
+    await _typing.close();
+    await _arrivals.close();
     await _identityAlerts.close();
     await _decryptFailures.close();
   }

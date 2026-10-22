@@ -477,6 +477,10 @@ class ApiClient {
   Future<void> leaveChat(String chatId) =>
       _post('/v1/chats/$chatId/leave', const {});
 
+  /// Hides a cloud chat's history so far from us, on every device.
+  Future<void> clearChat(String chatId) =>
+      _post('/v1/chats/$chatId/clear', const {});
+
   /// People whose username starts with [query].
   Future<List<UserProfile>> searchUsers(String query) async {
     final json =
@@ -487,6 +491,11 @@ class ApiClient {
   }
 
   Future<UserProfile> me() async => UserProfile.fromJson(await _get('/v1/me'));
+
+  /// Closes the account for good. The password is asked again even though
+  /// the session is valid: a stolen token alone must not be enough.
+  Future<void> deleteAccount(String password) =>
+      _send('DELETE', '/v1/me', {'password': password});
 
   Future<UserProfile> updateMe({String? displayName, String? bio}) async =>
       UserProfile.fromJson(await _send('PATCH', '/v1/me', {

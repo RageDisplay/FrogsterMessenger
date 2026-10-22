@@ -273,5 +273,96 @@
       }
     }
   },
-  "secretGroupNameNote": "The name is sent end to end: the server never sees it."
+  "secretGroupNameNote": "The name is sent end to end: the server never sees it.",
+  "actionReply": "Reply",
+  "actionForward": "Forward",
+  "forwardTo": "Forward to",
+  "forwardedFrom": "Forwarded from {name}",
+  "@forwardedFrom": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "forwardedDone": "Forwarded to {chat}",
+  "@forwardedDone": {
+    "placeholders": {
+      "chat": {
+        "type": "String"
+      }
+    }
+  },
+  "replyingTo": "Reply to {name}",
+  "@replyingTo": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "replyUnknown": "Message",
+  "you": "You",
+  "typing": "typing…",
+  "typingNamed": "{name} is typing…",
+  "@typingNamed": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "typingSeveral": "several people are typing…",
+  "draftPrefix": "Draft:",
+  "unreadDivider": "Unread messages",
+  "chatPin": "Pin",
+  "chatUnpin": "Unpin",
+  "chatMute": "Mute",
+  "chatUnmute": "Unmute",
+  "chatArchive": "Archive",
+  "chatUnarchive": "Unarchive",
+  "archiveTitle": "Archive",
+  "deleteChat": "Delete chat",
+  "deleteChatTitle": "Delete this chat?",
+  "deleteChatBody": "Its history is removed from all your devices. The other side keeps theirs.",
+  "deleteSecretChatBody": "Its history is removed from this device. The other side keeps theirs.",
+  "editProfile": "Edit profile",
+  "displayNameLabel": "Name",
+  "displayNameHint": "How contacts see you",
+  "bioLabel": "About",
+  "profileSaved": "Profile saved",
+  "currentPassword": "Current password",
+  "newPassword": "New password",
+  "repeatPassword": "Repeat the new password",
+  "passwordsDiffer": "The passwords do not match",
+  "passwordWrong": "The current password is wrong",
+  "passwordChanged": "Password changed. Your other devices were signed out.",
+  "deleteAccount": "Delete account",
+  "deleteAccountHint": "For good: devices, keys and name",
+  "deleteAccountTitle": "Delete your account?",
+  "deleteAccountBody": "All your devices are signed out and their keys erased, you leave every group, and your username becomes free. Messages you sent stay with the people who received them. This cannot be undone.",
+  "deleteAccountConfirm": "Delete for good",
+  "about": "About",
+  "appVersion": "Version {version}",
+  "@appVersion": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "licenses": "Open-source licenses",
+  "deletedAccount": "Deleted account",
+  "search": "Search",
+  "searchHint": "Chats and messages",
+  "searchMessages": "Messages",
+  "searchNothing": "Nothing found",
+  "notifications": "Notifications",
+  "notificationsShow": "Show notifications",
+  "notificationsPreview": "Show message text",
+  "notificationsPreviewHint": "Off: only \"New message\", without a name or words",
+  "notifyNewMessage": "New message",
+  "notifyVoice": "Voice message",
+  "trayOpen": "Open Frogster",
+  "trayQuit": "Quit"
 }

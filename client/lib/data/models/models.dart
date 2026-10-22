@@ -75,6 +75,11 @@ class Chat {
     this.role = 'member',
     this.peerReadSeq = 0,
     this.syncedSeq = 0,
+    this.draft = '',
+    this.pinned = false,
+    this.muted = false,
+    this.archived = false,
+    this.hidden = false,
   });
 
   final String id;
@@ -106,6 +111,22 @@ class Chat {
   /// chats are delivered by the queue and do not use it.
   final int syncedSeq;
 
+  // What follows is this device's own arrangement of the list; the server
+  // never hears about it.
+
+  /// Text typed but not sent.
+  final String draft;
+  final bool pinned;
+
+  /// No badge colour and, later, no notifications.
+  final bool muted;
+
+  /// Kept out of the main list until opened from the archive.
+  final bool archived;
+
+  /// Deleted from the list; comes back when a new message arrives.
+  final bool hidden;
+
   bool get isGroup => type == 'group';
   bool get isSecret => mode == ChatMode.secret;
   bool get isCloud => mode == ChatMode.cloud;
@@ -136,6 +157,11 @@ class Chat {
     String? role,
     int? peerReadSeq,
     int? syncedSeq,
+    String? draft,
+    bool? pinned,
+    bool? muted,
+    bool? archived,
+    bool? hidden,
   }) =>
       Chat(
         id: id,
@@ -152,6 +178,11 @@ class Chat {
         role: role ?? this.role,
         peerReadSeq: peerReadSeq ?? this.peerReadSeq,
         syncedSeq: syncedSeq ?? this.syncedSeq,
+        draft: draft ?? this.draft,
+        pinned: pinned ?? this.pinned,
+        muted: muted ?? this.muted,
+        archived: archived ?? this.archived,
+        hidden: hidden ?? this.hidden,
       );
 }
 
@@ -171,6 +202,7 @@ class Message {
     this.reactions = const {},
     this.attachment,
     this.editedAt,
+    this.forwardedFrom,
   });
 
   final String id;
@@ -199,6 +231,9 @@ class Message {
   /// When the author last changed the text; null if never edited.
   final DateTime? editedAt;
 
+  /// Who wrote the original of a forwarded message.
+  final String? forwardedFrom;
+
   bool get hasAttachment => attachment != null;
   bool get isEdited => editedAt != null;
 
@@ -224,6 +259,7 @@ class Message {
         reactions: reactions ?? this.reactions,
         attachment: attachment ?? this.attachment,
         editedAt: editedAt ?? this.editedAt,
+        forwardedFrom: forwardedFrom,
       );
 }
 
@@ -261,6 +297,7 @@ class MessagePayload {
     PayloadKind? kind,
     this.targetId,
     this.title,
+    this.forwardedFrom,
   }) : _kind = kind;
 
   /// Format version, so a later change can be told apart from this one.
@@ -288,6 +325,9 @@ class MessagePayload {
   /// A secret group's title, for [PayloadKind.meta].
   final String? title;
 
+  /// The original author's name, when this is a forwarded copy.
+  final String? forwardedFrom;
+
   PayloadKind get kind =>
       _kind ?? (reaction != null ? PayloadKind.reaction : PayloadKind.message);
 
@@ -303,6 +343,7 @@ class MessagePayload {
         if (attachment != null) 'attachment': attachment!.toJson(),
         if (targetId != null) 'target_id': targetId,
         if (title != null) 'title': title,
+        if (forwardedFrom != null) 'fwd': forwardedFrom,
         'sent_at': (sentAt ?? DateTime.now()).millisecondsSinceEpoch,
       };
 
@@ -322,6 +363,7 @@ class MessagePayload {
                 json['attachment'] as Map<String, dynamic>),
         targetId: json['target_id'] as String?,
         title: json['title'] as String?,
+        forwardedFrom: json['fwd'] as String?,
         sentAt: json['sent_at'] == null
             ? null
             : DateTime.fromMillisecondsSinceEpoch(json['sent_at'] as int),
