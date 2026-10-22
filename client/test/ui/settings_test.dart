@@ -56,6 +56,7 @@ void main() {
     var called = false;
     await tester.pumpWidget(_settings(changePassword: (_, _) async => called = true));
     await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('Сменить пароль'), 200);
     await tester.tap(find.text('Сменить пароль'));
     await tester.pumpAndSettle();
 

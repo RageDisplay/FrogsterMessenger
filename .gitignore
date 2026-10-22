@@ -13,6 +13,7 @@ server/bin/
 *.apk
 *.aab
 *.appbundle
+client/dist/
 
 # Server runtime data
 # filed writes uploaded attachments here (FROGSTER_BLOB_DIR, see
