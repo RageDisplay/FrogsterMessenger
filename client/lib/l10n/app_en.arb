@@ -1,0 +1,277 @@
+{
+  "@@locale": "en",
+  "appTitle": "Frogster",
+  "loginTagline": "Private messenger with secret chats",
+  "serverLabel": "Server",
+  "serverHint": "chat.example.com or 203.0.113.5",
+  "serverRequired": "Enter the server address",
+  "fingerprintLabel": "Certificate fingerprint",
+  "fingerprintHelper": "Printed by the installer, or run \"frogster fingerprint\" on the server",
+  "fingerprintTooShort": "Enter all 8 groups",
+  "haveFingerprint": "I have a certificate fingerprint",
+  "usernameLabel": "Username",
+  "passwordLabel": "Password",
+  "usernameTooShort": "At least 3 characters",
+  "usernameInvalid": "Latin letters, digits and underscore only",
+  "passwordTooShort": "At least 10 characters",
+  "signIn": "Sign in",
+  "createAccount": "Create account",
+  "haveAccount": "I already have an account",
+  "newAccount": "Create a new account",
+  "showPassword": "Show password",
+  "hidePassword": "Hide password",
+  "errorTooManyAttempts": "Too many attempts. Try again in a few minutes.",
+  "errorUnreachable": "Could not reach the server",
+  "errorTimeout": "The server did not answer in time",
+  "errorBadAddress": "This does not look like a server address",
+  "errorIncompleteLink": "This connection link is incomplete",
+  "errorUntrustedCertificate": "The server uses its own certificate. Enter the fingerprint shown by the installer (or \"frogster fingerprint\" on the server).",
+  "errorFingerprintMismatch": "The certificate fingerprint does not match. Check it with \"frogster fingerprint\" on the server. If it is right, someone may be intercepting the connection.",
+  "errorNoCa": "This server does not publish its own certificate. If it has a domain name, connect without a fingerprint.",
+  "errorFingerprintChars": "The fingerprint may only contain 0–9 and A–F",
+  "errorServerStatus": "The server answered with an error ({code})",
+  "@errorServerStatus": {
+    "placeholders": {
+      "code": {
+        "type": "int"
+      }
+    }
+  },
+  "errorSignIn": "Sign-in failed: {error}",
+  "@errorSignIn": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "sessionEnded": "Your session has ended. Sign in again.",
+  "connectionSecure": "online",
+  "connectionConnecting": "connecting…",
+  "connectionOffline": "offline",
+  "emptyChatsTitle": "No chats yet",
+  "emptyChatsBody": "Start a conversation with the + button",
+  "navChats": "Chats",
+  "navNewChat": "New chat",
+  "navSettings": "Settings",
+  "selectConversation": "Pick a conversation",
+  "yesterday": "Yesterday",
+  "today": "Today",
+  "newChatTitle": "New chat",
+  "newChatUsername": "Their username",
+  "cancel": "Cancel",
+  "start": "Start",
+  "back": "Back",
+  "safetyNumberTooltip": "Safety number",
+  "messagePlaceholder": "Message",
+  "verifyToSend": "Verify the contact to send",
+  "attach": "Attach a photo",
+  "send": "Send",
+  "removeAttachment": "Remove",
+  "noMessages": "No messages yet — say hi",
+  "couldNotLoad": "Could not load messages",
+  "couldNotReadFile": "Could not read the file: {error}",
+  "@couldNotReadFile": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "identityChangedBlocking": "This contact's safety number has changed. They may have reinstalled the app — or someone may be intercepting your messages. Verify before sending.",
+  "identityChangedInfo": "This contact's safety number has changed, usually because they switched to a new device. Your messages are still encrypted. Verify the number if you want to be certain.",
+  "iVerifiedIt": "I verified it",
+  "gotIt": "Got it",
+  "statusSending": "Sending",
+  "statusSent": "Sent",
+  "statusDelivered": "Delivered",
+  "statusRead": "Read",
+  "statusFailed": "Not sent",
+  "attachmentPhoto": "Photo",
+  "attachmentVideo": "Video",
+  "attachmentAudio": "Audio",
+  "attachmentPdf": "PDF document",
+  "attachmentFile": "File",
+  "attachmentTapToOpen": "Tap to open · {size}",
+  "@attachmentTapToOpen": {
+    "placeholders": {
+      "size": {
+        "type": "String"
+      }
+    }
+  },
+  "attachmentDownloadFailed": "Download failed",
+  "attachmentCannotDisplay": "Could not display",
+  "filesTooLarge": "Files must be under 100 MB",
+  "savedTo": "Saved to {path}",
+  "@savedTo": {
+    "placeholders": {
+      "path": {
+        "type": "String"
+      }
+    }
+  },
+  "couldNotOpenFile": "Could not open the file: {error}",
+  "@couldNotOpenFile": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "couldNotComputeSafety": "Could not compute the safety number: {error}",
+  "@couldNotComputeSafety": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "settingsTitle": "Settings",
+  "signedInAs": "Signed in on {server}",
+  "@signedInAs": {
+    "placeholders": {
+      "server": {
+        "type": "String"
+      }
+    }
+  },
+  "appearance": "Appearance",
+  "themeSystem": "System",
+  "themeLight": "Light",
+  "themeDark": "Dark",
+  "language": "Language",
+  "languageSystem": "System",
+  "security": "Security",
+  "changePassword": "Change password",
+  "changePasswordHint": "Signs out every other device",
+  "activeSessions": "Active sessions",
+  "noOtherSessions": "No other sessions",
+  "signOut": "Sign out",
+  "signOutHint": "Keeps your keys so you can sign back in",
+  "signOutDeviceTitle": "Sign out this device?",
+  "signOutDeviceBody": "\"{device}\" will be signed out immediately and retired: your contacts stop encrypting new messages to it. Use this for a phone you no longer have.",
+  "@signOutDeviceBody": {
+    "placeholders": {
+      "device": {
+        "type": "String"
+      }
+    }
+  },
+  "signOutTitle": "Sign out?",
+  "signOutBody": "Your messages and encryption keys stay on this device, so you can sign back in and carry on where you left off.\n\nErasing everything also removes this device's identity. Your contacts will see it as a new device, and existing conversations cannot be continued.",
+  "eraseEverything": "Erase everything",
+  "unknownDevice": "Unknown device",
+  "thisDevice": "This device",
+  "lastUsed": "Last used {date}",
+  "@lastUsed": {
+    "placeholders": {
+      "date": {
+        "type": "String"
+      }
+    }
+  },
+  "safetyNumberTitle": "Safety number",
+  "verifyWith": "Verify with {name}",
+  "@verifyWith": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "safetyExplain": "Compare these numbers in person or over a call you trust. If they match, nobody in between can read your conversation.",
+  "copy": "Copy",
+  "copied": "Safety number copied",
+  "markVerified": "Mark as verified",
+  "safetyChangeNote": "If this number changes later, your contact may have reinstalled the app — or someone may be intercepting the conversation. Frogster will tell you when it happens.",
+  "chatEncrypted": "End-to-end encrypted",
+  "chatsTitle": "Chats",
+  "connectionOfflineHint": "Messages will be sent when the connection is back",
+  "filterAll": "All",
+  "filterDirect": "Direct",
+  "filterGroups": "Groups",
+  "filterEmpty": "Nothing here yet",
+  "filterSecret": "Secret",
+  "modeCloud": "Regular",
+  "modeSecret": "Secret",
+  "modeCloudExplain": "Stored on the server in encrypted form and synced to all your devices.",
+  "modeSecretExplain": "End-to-end encrypted: only the participants’ devices can read it. History stays on the devices it was written on.",
+  "secretChatSubtitle": "secret chat",
+  "secretGroupSubtitle": "secret group · {count, plural, =1{1 member} other{{count} members}}",
+  "@secretGroupSubtitle": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "membersCount": "{count, plural, =1{1 member} other{{count} members}}",
+  "@membersCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "newChatSearchHint": "Username",
+  "searchTooShort": "Type at least two letters of a username",
+  "searchNobody": "Nobody by that name",
+  "searchFailed": "Search failed: {error}",
+  "@searchFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "newGroup": "New group",
+  "newGroupTitle": "New group",
+  "groupNameLabel": "Group name",
+  "groupMembersLabel": "Members",
+  "groupAddPeople": "Find people to add",
+  "groupNeedsMembers": "Add at least one member",
+  "groupNeedsName": "Give the group a name",
+  "create": "Create",
+  "groupInfo": "Group info",
+  "addMembers": "Add members",
+  "add": "Add",
+  "removeFromGroup": "Remove from group",
+  "leaveGroup": "Leave group",
+  "leaveGroupTitle": "Leave the group?",
+  "leaveGroupBody": "You will stop receiving its messages. To come back, an admin has to add you again.",
+  "leave": "Leave",
+  "rename": "Rename",
+  "save": "Save",
+  "roleAdmin": "admin",
+  "youSuffix": "{name} (you)",
+  "@youSuffix": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "actionCopy": "Copy",
+  "actionEdit": "Edit",
+  "actionDelete": "Delete for everyone",
+  "actionRetry": "Send again",
+  "textCopied": "Copied",
+  "editingMessage": "Editing",
+  "editedMark": "edited",
+  "deleteMessageTitle": "Delete for everyone?",
+  "deleteMessageBody": "The message disappears from this chat on every device.",
+  "delete": "Delete",
+  "previewPhoto": "Photo",
+  "previewFile": "File",
+  "failedTapToRetry": "Not sent — tap to try again",
+  "actionFailed": "Could not do that: {error}",
+  "@actionFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "secretGroupNameNote": "The name is sent end to end: the server never sees it."
+}

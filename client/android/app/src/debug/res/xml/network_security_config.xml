@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug builds only: plain HTTP is allowed so the app can reach a development
+  server (go run ./cmd/frogsterd) on the local network or the emulator's
+  10.0.2.2 alias. Release builds use src/main/res/xml/network_security_config.xml,
+  which permits TLS only.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system"/>
+        </trust-anchors>
+    </base-config>
+</network-security-config>

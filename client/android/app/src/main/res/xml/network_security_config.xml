@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Release builds talk to the server over TLS only. Servers installed with
+  deploy/install.sh always serve HTTPS, either with a publicly trusted
+  certificate or with their own CA, which the app pins in code after the user
+  confirms its fingerprint (see lib/data/remote/server_config.dart).
+
+  Debug builds allow plain HTTP for a development server on the local
+  network: see src/debug/res/xml/network_security_config.xml.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system"/>
+        </trust-anchors>
+    </base-config>
+</network-security-config>

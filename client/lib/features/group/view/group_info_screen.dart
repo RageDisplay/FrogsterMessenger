@@ -1,0 +1,272 @@
+/// A group's details: name, members and roles, and leaving.
+library;
+
+import 'package:flutter/material.dart';
+
+import '../../../data/models/models.dart';
+import '../../../l10n/app_localizations.dart';
+import '../../../ui/theme/app_theme.dart';
+import '../../../ui/theme/pond_colors.dart';
+import '../../../ui/widgets/lily_avatar.dart';
+
+class GroupInfoScreen extends StatefulWidget {
+  const GroupInfoScreen({
+    super.key,
+    required this.chat,
+    required this.selfUserId,
+    required this.onRename,
+    required this.onAddMembers,
+    required this.onRemove,
+    required this.onLeave,
+  });
+
+  final Chat chat;
+  final String selfUserId;
+
+  /// Each returns the chat as it stands afterwards, or null if it failed.
+  final Future<Chat?> Function(String title) onRename;
+  final Future<Chat?> Function() onAddMembers;
+  final Future<Chat?> Function(ChatMember member) onRemove;
+  final Future<void> Function() onLeave;
+
+  @override
+  State<GroupInfoScreen> createState() => _GroupInfoScreenState();
+}
+
+class _GroupInfoScreenState extends State<GroupInfoScreen> {
+  late Chat _chat = widget.chat;
+  var _busy = false;
+
+  Future<void> _run(Future<Chat?> Function() action) async {
+    setState(() => _busy = true);
+    try {
+      final updated = await action();
+      if (updated != null && mounted) setState(() => _chat = updated);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(AppLocalizations.of(context).actionFailed('$e'))),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _rename() async {
+    final l10n = AppLocalizations.of(context);
+    final controller = TextEditingController(text: _chat.title ?? '');
+    final title = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(l10n.rename),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 64,
+          decoration: InputDecoration(labelText: l10n.groupNameLabel),
+          onSubmitted: (v) => Navigator.of(dialogContext).pop(v.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: Text(l10n.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(controller.text.trim()),
+            child: Text(l10n.save),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (title == null || title.isEmpty || title == _chat.title) return;
+    await _run(() => widget.onRename(title));
+  }
+
+  Future<void> _leave() async {
+    final l10n = AppLocalizations.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(l10n.leaveGroupTitle),
+        content: Text(l10n.leaveGroupBody),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(l10n.cancel),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: context.pond.danger),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(l10n.leave),
+          ),
+        ],
+      ),
+    );
+    if (!(confirmed ?? false)) return;
+    setState(() => _busy = true);
+    try {
+      await widget.onLeave();
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    final pond = context.pond;
+    final chat = _chat;
+    final admin = chat.isAdmin;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(l10n.groupInfo, style: const TextStyle(fontWeight: FontWeight.w800)),
+      ),
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 560),
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+              children: [
+                Row(
+                  children: [
+                    LilyAvatar(
+                      seed: chat.id,
+                      label: chat.displayName,
+                      icon: Icons.groups_rounded,
+                      secret: chat.isSecret,
+                      size: 64,
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            chat.displayName,
+                            style: const TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: -0.3,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Row(
+                            children: [
+                              Icon(
+                                chat.isSecret ? Icons.lock_rounded : Icons.cloud_outlined,
+                                size: 13,
+                                color: chat.isSecret ? pond.mint : pond.inkMuted,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                '${chat.isSecret ? l10n.modeSecret : l10n.modeCloud} · '
+                                '${l10n.membersCount(chat.members.length)}',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: chat.isSecret ? pond.mint : pond.inkMuted,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (admin)
+                      IconButton(
+                        tooltip: l10n.rename,
+                        onPressed: _busy ? null : _rename,
+                        icon: const Icon(Icons.edit_outlined),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                if (_busy) const LinearProgressIndicator(minHeight: 2),
+                Material(
+                  color: pond.lily,
+                  borderRadius: BorderRadius.circular(PondRadii.card),
+                  clipBehavior: Clip.antiAlias,
+                  child: Column(
+                    children: [
+                      if (admin) ...[
+                        ListTile(
+                          onTap: _busy ? null : () => _run(widget.onAddMembers),
+                          leading: Icon(Icons.person_add_alt_1_outlined, color: pond.accent),
+                          title: Text(
+                            l10n.addMembers,
+                            style: TextStyle(color: pond.accent, fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                        Divider(height: 1, color: pond.outline),
+                      ],
+                      for (final member in chat.members)
+                        ListTile(
+                          leading: LilyAvatar(seed: member.username, label: member.name, size: 40),
+                          title: Text(
+                            member.userId == widget.selfUserId
+                                ? l10n.youSuffix(member.name)
+                                : member.name,
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                          subtitle: Text('@${member.username}',
+                              style: TextStyle(color: pond.inkMuted)),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (member.isAdmin)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: pond.accentSoft,
+                                    borderRadius: BorderRadius.circular(PondRadii.chip),
+                                  ),
+                                  child: Text(
+                                    l10n.roleAdmin,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                      color: pond.accent,
+                                    ),
+                                  ),
+                                ),
+                              if (admin && member.userId != widget.selfUserId)
+                                PopupMenuButton<void>(
+                                  enabled: !_busy,
+                                  itemBuilder: (_) => [
+                                    PopupMenuItem(
+                                      onTap: () => _run(() => widget.onRemove(member)),
+                                      child: Text(
+                                        l10n.removeFromGroup,
+                                        style: TextStyle(color: pond.danger),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: pond.danger,
+                    side: BorderSide(color: pond.outline),
+                    minimumSize: const Size.fromHeight(48),
+                  ),
+                  onPressed: _busy ? null : _leave,
+                  icon: const Icon(Icons.logout_rounded),
+                  label: Text(l10n.leaveGroup),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
