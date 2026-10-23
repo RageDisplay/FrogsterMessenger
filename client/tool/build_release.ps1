@@ -12,8 +12,9 @@
                 Built in, so nobody has to type it.
   -Version  shown under Settings -> About.
 
-The Android build is signed with android\key.properties when it exists
-(see tool\README-release.md), otherwise with the debug key.
+The Android build is signed with the key that key.properties names, found in
+$env:FROGSTER_SIGNING_DIR, %USERPROFILE%\.frogster\signing or android\
+(see tool\README-release.md); without one, with the debug key.
 #>
 param(
   [string]$Server = "",
@@ -59,8 +60,16 @@ $dist = Join-Path $client "dist"
 New-Item -ItemType Directory -Force $dist | Out-Null
 
 Write-Host "== Android" -ForegroundColor Cyan
-if (-not (Test-Path "android\key.properties")) {
-  Write-Warning "android\key.properties not found: signing with the debug key."
+# The same places android\app\build.gradle.kts looks in, first found wins.
+$keyFile = @(
+  $(if ($env:FROGSTER_SIGNING_DIR) { Join-Path $env:FROGSTER_SIGNING_DIR "key.properties" }),
+  (Join-Path $env:USERPROFILE ".frogster\signing\key.properties"),
+  "android\key.properties"
+) | Where-Object { $_ -and (Test-Path $_ -PathType Leaf) } | Select-Object -First 1
+if ($keyFile) {
+  Write-Host "Signing key: $(Resolve-Path $keyFile)"
+} else {
+  Write-Warning "No key.properties (see tool\README-release.md): signing with the debug key. Phones with a release-signed Frogster will not take this APK as an update."
 }
 flutter build apk --release @defines
 if ($LASTEXITCODE -ne 0) { throw "Android build failed" }

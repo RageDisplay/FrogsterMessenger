@@ -18,19 +18,38 @@ android {
         isCoreLibraryDesugaringEnabled = true
     }
 
-    // The release key lives outside the repository: android/key.properties
-    // names the keystore and its passwords (see tool/README-release.md).
+    // The release key never enters the repository. key.properties names the
+    // keystore and its passwords (see tool/README-release.md) and is looked
+    // for, first found wins, in:
+    //   - the folder in FROGSTER_SIGNING_DIR;
+    //   - ~/.frogster/signing, which survives fresh clones of the repo;
+    //   - android/ of this checkout.
     // Without it a release build falls back to the debug key, which is
     // fine for trying the app out but cannot be updated in place later by a
     // properly signed build.
+    val keyFile = listOfNotNull(
+        System.getenv("FROGSTER_SIGNING_DIR")?.takeIf { it.isNotBlank() }?.let { File(it, "key.properties") },
+        File(System.getProperty("user.home"), ".frogster/signing/key.properties"),
+        rootProject.file("key.properties"),
+    ).firstOrNull { it.isFile }
     val keyProperties = Properties().apply {
-        val file = rootProject.file("key.properties")
-        if (file.exists()) file.inputStream().use { load(it) }
+        keyFile?.inputStream()?.use { load(it) }
+    }
+    // A relative storeFile is taken next to key.properties; one written for
+    // the app module ("../x.jks") still works.
+    val keyStore = keyProperties.getProperty("storeFile")?.let { name ->
+        val candidates = if (File(name).isAbsolute) listOf(File(name))
+            else listOf(File(keyFile!!.parentFile, name), file(name))
+        candidates.firstOrNull { it.isFile }
+            ?: throw GradleException(
+                "$keyFile names the keystore '$name', but it is not there. " +
+                    "Put the .jks next to key.properties, or remove key.properties to sign with the debug key."
+            )
     }
     signingConfigs {
-        if (keyProperties.isNotEmpty()) {
+        if (keyStore != null) {
             create("release") {
-                storeFile = file(keyProperties.getProperty("storeFile"))
+                storeFile = keyStore
                 storePassword = keyProperties.getProperty("storePassword")
                 keyAlias = keyProperties.getProperty("keyAlias")
                 keyPassword = keyProperties.getProperty("keyPassword")
