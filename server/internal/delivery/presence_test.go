@@ -94,7 +94,9 @@ func (r *presenceRig) sent() []sentFrame {
 	return append([]sentFrame(nil), r.frames...)
 }
 
-func (r *presenceRig) key(user uuid.UUID) ws.ClientKey { return ws.ClientKey{UserID: user, DeviceID: user} }
+func (r *presenceRig) key(user uuid.UUID) ws.ClientKey {
+	return ws.ClientKey{UserID: user, DeviceID: user}
+}
 
 func TestPresenceAnnouncesComingAndGoing(t *testing.T) {
 	r := newRig(30 * time.Millisecond)

@@ -43,10 +43,10 @@ func udpSender(conn *net.UDPConn, addr netip.AddrPort) Sender {
 }
 
 // The WebSocket path, for networks that let nothing but HTTPS through.
-// mediaHello bounds how long a socket may stay open before it proves to
-// belong to a member. Opening one costs nothing, so it is not allowed to
-// linger on that alone. A variable for tests.
-var mediaHello = 10 * time.Second
+// defaultMediaHello bounds how long a socket may stay open before it proves
+// to belong to a member. Opening one costs nothing, so it is not allowed to
+// linger on that alone.
+const defaultMediaHello = 10 * time.Second
 
 const (
 	mediaWrite = 5 * time.Second
@@ -98,7 +98,7 @@ func (m *Manager) MediaHandler(checkOrigin func(r *http.Request) bool) http.Hand
 			}
 		}
 
-		_ = conn.SetReadDeadline(time.Now().Add(mediaHello))
+		_ = conn.SetReadDeadline(time.Now().Add(m.mediaHello))
 		for {
 			kind, pkt, err := conn.ReadMessage()
 			if err != nil {

@@ -115,6 +115,9 @@ type Manager struct {
 	notify func(ctx context.Context, chatID uuid.UUID, rooms []RoomState)
 	now    func() time.Time
 	log    *slog.Logger
+
+	// mediaHello: see defaultMediaHello. A field, so tests can shorten it.
+	mediaHello time.Duration
 }
 
 // NewManager builds a Manager. notify tells a chat's members who is in its
@@ -122,14 +125,15 @@ type Manager struct {
 // for a chat always carries its latest state.
 func NewManager(notify func(ctx context.Context, chatID uuid.UUID, rooms []RoomState), log *slog.Logger) *Manager {
 	return &Manager{
-		rooms:    map[uuid.UUID]map[uint32]*member{},
-		byTag:    map[Tag]*member{},
-		byDevice: map[uuid.UUID]*member{},
-		changed:  make(chan struct{}, 1),
-		pending:  map[uuid.UUID]struct{}{},
-		notify:   notify,
-		now:      time.Now,
-		log:      log,
+		rooms:      map[uuid.UUID]map[uint32]*member{},
+		byTag:      map[Tag]*member{},
+		byDevice:   map[uuid.UUID]*member{},
+		changed:    make(chan struct{}, 1),
+		pending:    map[uuid.UUID]struct{}{},
+		notify:     notify,
+		now:        time.Now,
+		log:        log,
+		mediaHello: defaultMediaHello,
 	}
 }
 

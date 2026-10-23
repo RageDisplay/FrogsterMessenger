@@ -433,10 +433,8 @@ func TestRemovedMidwayIsNotRelayed(t *testing.T) {
 // A socket that never proves to be a member's is closed, however much it
 // sends: junk does not keep it open.
 func TestMediaSocketWithoutAMemberIsClosed(t *testing.T) {
-	old := mediaHello
-	mediaHello = 300 * time.Millisecond
-	defer func() { mediaHello = old }()
 	f := newFixture(t)
+	f.m.mediaHello = 300 * time.Millisecond
 	srv := httptest.NewServer(f.m.MediaHandler(func(*http.Request) bool { return true }))
 	defer srv.Close()
 	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)
