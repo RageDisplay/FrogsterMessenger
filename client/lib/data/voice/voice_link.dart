@@ -10,6 +10,7 @@ import 'dart:typed_data';
 
 import 'package:frogster_audio/frogster_audio.dart';
 
+import '../local/error_log.dart';
 import '../remote/server_config.dart';
 import 'voice_models.dart';
 import 'voice_wire.dart';
@@ -324,12 +325,19 @@ class VoiceLinkIsolate {
             rtt: m[1] == null ? null : Duration(microseconds: m[1] as int)));
       }
     });
+    // An error in there would otherwise vanish with the isolate.
+    final errors = ReceivePort()
+      ..listen((e) {
+        if (e is List && e.length == 2) {
+          ErrorLog.instance?.record('voice link: ${e[0]}', StackTrace.fromString('${e[1]}'));
+        }
+      });
     final isolate = await Isolate.spawn(_main, {
       'events': events.sendPort,
       'engine': engine.address,
       'server': server.toJson(),
       'grant': grant.toJson(),
-    }, debugName: 'voice');
+    }, debugName: 'voice', onError: errors.sendPort);
     return VoiceLinkIsolate._(isolate, await ready.future, events, stopped);
   }
 

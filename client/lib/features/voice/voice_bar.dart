@@ -8,6 +8,7 @@ import '../../data/voice/voice_controller.dart';
 import '../../data/voice/voice_link.dart';
 import '../../l10n/app_localizations.dart';
 import '../../ui/theme/pond_colors.dart';
+import 'voice_scope.dart';
 
 class VoiceBar extends StatelessWidget {
   const VoiceBar({super.key, required this.controller, this.onOpen});
@@ -120,4 +121,27 @@ class _Labelled extends StatelessWidget {
   final Widget child;
   @override
   Widget build(BuildContext context) => Semantics(button: true, label: label, child: child);
+}
+
+/// Every screen, with the call bar over it while in a voice channel. Sits
+/// above the navigator, in the app's builder, so it stays while screens
+/// come and go.
+class VoiceFrame extends StatelessWidget {
+  const VoiceFrame({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final scope = VoiceScope.scopeOf(context);
+    final voice = scope?.notifier;
+    if (voice?.current == null) return child;
+    return Column(
+      children: [
+        VoiceBar(controller: voice!, onOpen: scope?.openChat),
+        // The bar took the status bar's place.
+        Expanded(child: MediaQuery.removePadding(context: context, removeTop: true, child: child)),
+      ],
+    );
+  }
 }

@@ -1003,4 +1003,17 @@ class AppLocalizationsRu extends AppLocalizations {
   String voiceInChat(int count) {
     return 'в голосовом: $count';
   }
+
+  @override
+  String get errorLogCopy => 'Скопировать журнал ошибок';
+
+  @override
+  String get errorLogHint =>
+      'Что пошло не так в приложении, без ваших сообщений: чтобы отправить разработчику';
+
+  @override
+  String get errorLogCopied => 'Скопировано';
+
+  @override
+  String get errorLogEmpty => 'Ошибок не записано';
 }

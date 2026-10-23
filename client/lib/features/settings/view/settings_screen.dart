@@ -2,10 +2,12 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:frogster_audio/frogster_audio.dart' show AudioDevice;
 
 import '../../../data/audio/voice_player.dart';
 import '../../../data/audio/voice_recording.dart';
+import '../../../data/local/error_log.dart';
 import '../../../data/local/preferences.dart';
 import '../../../data/models/models.dart';
 import '../../../l10n/app_localizations.dart';
@@ -261,6 +263,20 @@ class SettingsScreen extends StatelessWidget {
                       applicationVersion: appVersion,
                     ),
                   ),
+                  if (ErrorLog.instance != null)
+                    ListTile(
+                      leading: const Icon(Icons.bug_report_outlined),
+                      title: Text(l10n.errorLogCopy),
+                      subtitle: Text(l10n.errorLogHint),
+                      onTap: () async {
+                        final messenger = ScaffoldMessenger.of(context);
+                        final text = await ErrorLog.instance!.read();
+                        if (text.isNotEmpty) await Clipboard.setData(ClipboardData(text: text));
+                        messenger.showSnackBar(SnackBar(
+                          content: Text(text.isEmpty ? l10n.errorLogEmpty : l10n.errorLogCopied),
+                        ));
+                      },
+                    ),
                 ],
               ),
             ),

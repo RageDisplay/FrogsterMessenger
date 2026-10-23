@@ -132,7 +132,7 @@ class _FrogsterAppState extends State<FrogsterApp> {
                 child: VoiceScope(
                   controller: session?.voice,
                   openChat: session?.openChat,
-                  child: _VoiceFrame(child: child!),
+                  child: VoiceFrame(child: child!),
                 ),
               ),
             ),
@@ -161,26 +161,6 @@ class _SessionScope {
   final void Function(String chatId) openChat;
 }
 
-/// Every screen, with the call bar over it while in a voice channel.
-class _VoiceFrame extends StatelessWidget {
-  const _VoiceFrame({required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    final scope = VoiceScope.scopeOf(context);
-    final voice = scope?.notifier;
-    if (voice?.current == null) return child;
-    return Column(
-      children: [
-        VoiceBar(controller: voice!, onOpen: scope?.openChat),
-        // The bar took the status bar's place.
-        Expanded(child: MediaQuery.removePadding(context: context, removeTop: true, child: child)),
-      ],
-    );
-  }
-}
 
 class _AppRoot extends StatefulWidget {
   const _AppRoot({required this.preferences, required this.session});

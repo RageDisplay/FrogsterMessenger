@@ -15,6 +15,7 @@ import 'package:frogster/data/voice/voice_link.dart';
 import 'package:frogster/data/voice/voice_models.dart';
 import 'package:frogster/features/voice/voice_bar.dart';
 import 'package:frogster/features/voice/voice_channels.dart';
+import 'package:frogster/features/voice/voice_scope.dart';
 import 'package:frogster/l10n/app_localizations.dart';
 import 'package:frogster/ui/theme/app_theme.dart';
 
@@ -102,6 +103,51 @@ void main() {
     await tester.pumpAndSettle();
     expect(api.calls, ['create Болталка']);
     expect(find.text('Болталка'), findsOneWidget);
+  });
+
+  testWidgets('the bar above the navigator, as the app has it, through screens, dialogs and the end of the call',
+      (tester) async {
+    final navigator = GlobalKey<NavigatorState>();
+    await tester.pumpWidget(MaterialApp(
+      theme: AppTheme.light(),
+      locale: const Locale('ru'),
+      navigatorKey: navigator,
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      builder: (context, child) => VoiceScope(controller: voice, openChat: (_) {}, child: VoiceFrame(child: child!)),
+      home: const Scaffold(body: Center(child: Text('home'))),
+    ));
+    await voice.join('g1', const VoiceChannel(id: 'ch1', name: 'Общий'), chatTitle: 'Пруд');
+    await tester.pump();
+    expect(find.text('Общий · Пруд'), findsOneWidget);
+    expect(find.text('home'), findsOneWidget, reason: 'the screen under the bar is the same one');
+
+    navigator.currentState!.push(MaterialPageRoute<void>(
+      builder: (context) => Scaffold(
+        appBar: AppBar(title: const Text('second')),
+        body: Builder(builder: (context) {
+          return TextButton(
+            onPressed: () {
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('snack')));
+              showDialog<void>(context: context, builder: (_) => const AlertDialog(title: Text('dialog')));
+            },
+            child: const Text('go'),
+          );
+        }),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('go'));
+    await tester.pumpAndSettle();
+    expect(find.text('dialog'), findsOneWidget);
+    expect(find.text('snack'), findsOneWidget);
+    await tester.tap(find.byIcon(Icons.mic_rounded));
+    await tester.pump();
+
+    await tester.tap(find.byIcon(Icons.call_end_rounded));
+    await tester.pumpAndSettle();
+    expect(find.text('dialog'), findsOneWidget, reason: 'the screens survive the bar going away');
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('the bar: where, how, and the buttons work', (tester) async {

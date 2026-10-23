@@ -138,3 +138,9 @@ dependency_overrides:
   # is Apple-only and unused there. 2.4.1 predates that dependency and is
   # otherwise equivalent.
   path_provider_foundation: 2.4.1
+  # 3.1.1 with every native entry point guarded: upstream lets WinRT errors
+  # escape through FFI, which aborts the process whenever Windows refuses to
+  # show or clear a notification -- the app died as a message arrived. See
+  # packages/flutter_local_notifications_windows/src/ffi_api.cpp.
+  flutter_local_notifications_windows:
+    path: packages/flutter_local_notifications_windows

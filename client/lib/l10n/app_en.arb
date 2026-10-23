@@ -510,5 +510,9 @@
         "type": "int"
       }
     }
-  }
+  },
+  "errorLogCopy": "Copy the error log",
+  "errorLogHint": "What went wrong in the app, without your messages: to send to the developer",
+  "errorLogCopied": "Copied",
+  "errorLogEmpty": "No errors recorded"
 }

@@ -290,5 +290,9 @@
   "voiceDeleteChannel": "Удалить",
   "voiceManageChannel": "Действия с каналом",
   "voiceChannelNameHint": "Например, Общий",
-  "voiceInChat": "в голосовом: {count}"
+  "voiceInChat": "в голосовом: {count}",
+  "errorLogCopy": "Скопировать журнал ошибок",
+  "errorLogHint": "Что пошло не так в приложении, без ваших сообщений: чтобы отправить разработчику",
+  "errorLogCopied": "Скопировано",
+  "errorLogEmpty": "Ошибок не записано"
 }

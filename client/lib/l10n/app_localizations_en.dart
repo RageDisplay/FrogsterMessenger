@@ -994,4 +994,17 @@ class AppLocalizationsEn extends AppLocalizations {
   String voiceInChat(int count) {
     return '$count in voice';
   }
+
+  @override
+  String get errorLogCopy => 'Copy the error log';
+
+  @override
+  String get errorLogHint =>
+      'What went wrong in the app, without your messages: to send to the developer';
+
+  @override
+  String get errorLogCopied => 'Copied';
+
+  @override
+  String get errorLogEmpty => 'No errors recorded';
 }

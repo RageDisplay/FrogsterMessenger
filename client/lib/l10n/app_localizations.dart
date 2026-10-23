@@ -1843,6 +1843,30 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'{count} in voice'**
   String voiceInChat(int count);
+
+  /// No description provided for @errorLogCopy.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy the error log'**
+  String get errorLogCopy;
+
+  /// No description provided for @errorLogHint.
+  ///
+  /// In en, this message translates to:
+  /// **'What went wrong in the app, without your messages: to send to the developer'**
+  String get errorLogHint;
+
+  /// No description provided for @errorLogCopied.
+  ///
+  /// In en, this message translates to:
+  /// **'Copied'**
+  String get errorLogCopied;
+
+  /// No description provided for @errorLogEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No errors recorded'**
+  String get errorLogEmpty;
 }
 
 class _AppLocalizationsDelegate
