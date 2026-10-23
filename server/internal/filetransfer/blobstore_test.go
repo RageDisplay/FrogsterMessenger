@@ -101,6 +101,11 @@ func TestBlobIDValidationBlocksTraversal(t *testing.T) {
 		"",
 		"x",
 		"not-a-uuid",
+		// Parseable as UUIDs, but not the form the store hands out.
+		"urn:uuid:6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+		"{6ba7b810-9dad-11d1-80b4-00c04fd430c8}",
+		"6ba7b8109dad11d180b400c04fd430c8",
+		"6BA7B810-9DAD-11D1-80B4-00C04FD430C8",
 	} {
 		if _, _, err := store.Open(id); !errors.Is(err, ErrBlobNotFound) {
 			t.Errorf("Open(%q) = %v, want ErrBlobNotFound", id, err)

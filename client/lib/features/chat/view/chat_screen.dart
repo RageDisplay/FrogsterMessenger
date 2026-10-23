@@ -8,6 +8,8 @@ import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../../data/audio/voice_player.dart';
+import '../../../data/audio/voice_recording.dart';
 import '../../../data/models/models.dart';
 import '../../../l10n/app_localizations.dart';
 import '../../../ui/format.dart';
@@ -18,6 +20,7 @@ import '../attachments.dart';
 import '../bloc/chat_bloc.dart';
 import '../widgets/attachment_view.dart';
 import '../widgets/message_bubble.dart';
+import '../widgets/voice_message_view.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({
@@ -32,6 +35,8 @@ class ChatScreen extends StatefulWidget {
     this.onOpenAttachment,
     this.onSaveAttachment,
     this.cachedAttachment,
+    this.voicePlayer,
+    this.startRecording,
   });
 
   /// The signed-in user, to tell our reactions and messages apart.
@@ -58,6 +63,12 @@ class ChatScreen extends StatefulWidget {
 
   /// A file already fetched, if there is one: shown without a round trip.
   final Uint8List? Function(AttachmentPayload)? cachedAttachment;
+
+  /// Plays voice messages, one at a time across the app.
+  final VoicePlayer? voicePlayer;
+
+  /// Starts recording a voice message from the chosen microphone.
+  final Future<VoiceRecording> Function()? startRecording;
 
   /// Closes the conversation. Supplied in narrow layouts, where the chat
   /// covers the list; in two-pane layouts the list stays visible and no back
@@ -92,6 +103,80 @@ class _ChatScreenState extends State<ChatScreen> {
   void initState() {
     super.initState();
     _scroll.addListener(_onScroll);
+    _composer.addListener(_onComposerText);
+  }
+
+  var _composerEmpty = true;
+
+  /// The send button turns into a microphone while there is nothing to send.
+  void _onComposerText() {
+    final empty = _composer.text.trim().isEmpty;
+    if (empty != _composerEmpty) setState(() => _composerEmpty = empty);
+  }
+
+  VoiceRecording? _recording;
+
+  /// Held down rather than tapped: letting go sends.
+  var _holding = false;
+
+  /// The microphone button is under a finger right now.
+  var _pressing = false;
+
+  Future<void> _startRecording({required bool hold}) async {
+    final start = widget.startRecording;
+    if (start == null || _recording != null) return;
+    final l10n = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    HapticFeedback.mediumImpact();
+    widget.voicePlayer?.stop();
+    try {
+      final recording = await start();
+      if (!mounted) {
+        await recording.cancel();
+        return;
+      }
+      setState(() {
+        _recording = recording;
+        // Let go before the microphone was ready: that was a tap after all,
+        // and the recording carries on until sent or thrown away.
+        _holding = hold && _pressing;
+      });
+    } on RecordingException catch (e) {
+      messenger.showSnackBar(SnackBar(
+        content: Text(e.problem == RecordingProblem.permission ? l10n.micPermission : l10n.micFailed),
+      ));
+    }
+  }
+
+  Future<void> _finishRecording({required bool send}) async {
+    final recording = _recording;
+    if (recording == null) return;
+    final bloc = context.read<ChatBloc>();
+    final replyTo = _replyTo?.id;
+    setState(() {
+      _recording = null;
+      _holding = false;
+      if (send) _replyTo = null;
+    });
+    if (!send) {
+      await recording.cancel();
+      recording.dispose();
+      return;
+    }
+    final clip = await recording.finish();
+    recording.dispose();
+    if (clip == null) return; // too short to be a message
+    bloc.add(ChatMessageSent('', replyToId: replyTo, attachments: [
+      PickedAttachment(
+        bytes: clip.ogg,
+        mimeType: 'audio/ogg',
+        fileName: 'voice.ogg',
+        voice: true,
+        durationMs: clip.duration.inMilliseconds,
+        waveform: clip.waveform,
+      ),
+    ]));
+    _scrollToBottom();
   }
 
   /// Asks for older messages as the top of what is loaded comes into view.
@@ -185,6 +270,9 @@ class _ChatScreenState extends State<ChatScreen> {
       _draftTimer!.cancel();
       if (_editing == null) context.read<ChatBloc>().add(ChatComposerChanged(_composer.text));
     }
+    final recording = _recording;
+    if (recording != null) recording.cancel().then((_) => recording.dispose());
+    _composer.removeListener(_onComposerText);
     _composer.dispose();
     _scroll.dispose();
     super.dispose();
@@ -386,8 +474,11 @@ class _ChatScreenState extends State<ChatScreen> {
 
     final action = await showModalBottomSheet<String>(
       context: context,
+      // Taller than a landscape phone: it scrolls rather than cutting off
+      // the actions at the bottom.
+      isScrollControlled: true,
       builder: (sheetContext) => SafeArea(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(8, 0, 8, 12),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -427,6 +518,12 @@ class _ChatScreenState extends State<ChatScreen> {
                   leading: const Icon(Icons.copy_rounded),
                   title: Text(l10n.actionCopy),
                   onTap: () => Navigator.of(sheetContext).pop('copy'),
+                ),
+              if (message.seq != null)
+                ListTile(
+                  leading: const Icon(Icons.check_circle_outline_rounded),
+                  title: Text(l10n.actionSelect),
+                  onTap: () => Navigator.of(sheetContext).pop('select'),
                 ),
               if (saveable != null && widget.onSaveAttachment != null)
                 ListTile(
@@ -468,6 +565,8 @@ class _ChatScreenState extends State<ChatScreen> {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(l10n.textCopied)));
       }
+    } else if (action == 'select') {
+      setState(() => _selection = {message.id});
     } else if (action == 'reply') {
       _startReply(message);
     } else if (action == 'forward') {
@@ -501,6 +600,85 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  /// Messages picked to act on together; empty outside selection mode.
+  var _selection = <String>{};
+
+  bool _canDelete(Message m, Chat? chat) =>
+      m.isOutgoing || ((chat?.isGroup ?? false) && (chat?.isAdmin ?? false));
+
+  void _toggleSelected(Message m) {
+    if (m.seq == null) return;
+    setState(() {
+      final next = {..._selection};
+      if (!next.remove(m.id)) next.add(m.id);
+      _selection = next;
+    });
+  }
+
+  /// The selected messages, oldest first, as the conversation shows them.
+  List<Message> _selected(ChatState state) =>
+      [for (final m in state.messages) if (_selection.contains(m.id)) m];
+
+  Future<void> _copySelected(ChatState state) async {
+    final l10n = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final chat = state.chat;
+    final text = [
+      for (final m in _selected(state))
+        if (m.body.isNotEmpty)
+          (chat?.isGroup ?? false) ? '${_authorOf(m, chat, l10n)}: ${m.body}' : m.body,
+    ].join('\n\n');
+    await Clipboard.setData(ClipboardData(text: text));
+    setState(() => _selection = {});
+    messenger.showSnackBar(SnackBar(content: Text(l10n.textCopied)));
+  }
+
+  Future<void> _forwardSelected(ChatState state) async {
+    final picker = widget.onPickForwardTarget;
+    if (picker == null) return;
+    final bloc = context.read<ChatBloc>();
+    final messenger = ScaffoldMessenger.of(context);
+    final l10n = AppLocalizations.of(context);
+    final messages = _selected(state);
+    final target = await picker();
+    if (target == null) return;
+    for (final m in messages) {
+      bloc.add(ChatMessageForwarded(m, target.id));
+    }
+    if (mounted) setState(() => _selection = {});
+    messenger.showSnackBar(SnackBar(content: Text(l10n.forwardedDone(target.displayName))));
+  }
+
+  Future<void> _deleteSelected(ChatState state) async {
+    final bloc = context.read<ChatBloc>();
+    final l10n = AppLocalizations.of(context);
+    final pond = context.pond;
+    final messages = _selected(state);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(l10n.deleteMessagesTitle(messages.length)),
+        content: Text(l10n.deleteMessageBody),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(l10n.cancel),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: pond.danger),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(l10n.delete),
+          ),
+        ],
+      ),
+    );
+    if (!(confirmed ?? false)) return;
+    for (final m in messages) {
+      bloc.add(ChatMessageDeleted(m));
+    }
+    if (mounted) setState(() => _selection = {});
+  }
+
   /// The list runs bottom-up, so the newest message is at offset zero.
   void _scrollToBottom() {
     if (!_scroll.hasClients) return;
@@ -528,11 +706,32 @@ class _ChatScreenState extends State<ChatScreen> {
                 : typing.length > 1
                     ? l10n.typingSeveral
                     : l10n.typingNamed(chat?.member(typing.first)?.name ?? '');
-        return Scaffold(
+        // Gone from the conversation, e.g. deleted elsewhere: unselected.
+        final present = {for (final m in state.messages) m.id};
+        if (_selection.any((id) => !present.contains(id))) {
+          _selection = _selection.where(present.contains).toSet();
+        }
+        final selecting = _selection.isNotEmpty;
+        final selected = selecting ? _selected(state) : const <Message>[];
+        return PopScope(
+          // Back leaves selection before it leaves the chat.
+          canPop: !selecting,
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop && selecting) setState(() => _selection = {});
+          },
+          child: Scaffold(
           body: SafeArea(
             child: Column(
               children: [
-                if (chat != null)
+                if (selecting)
+                  _SelectionBar(
+                    count: _selection.length,
+                    onCancel: () => setState(() => _selection = {}),
+                    onCopy: selected.any((m) => m.body.isNotEmpty) ? () => _copySelected(state) : null,
+                    onForward: widget.onPickForwardTarget == null ? null : () => _forwardSelected(state),
+                    onDelete: selected.every((m) => _canDelete(m, chat)) ? () => _deleteSelected(state) : null,
+                  )
+                else if (chat != null)
                   _Header(
                     chat: chat,
                     onBack: widget.onBack,
@@ -561,8 +760,31 @@ class _ChatScreenState extends State<ChatScreen> {
                     text: _snippet(_replyTo!, l10n),
                     onCancel: () => setState(() => _replyTo = null),
                   ),
+                if (_recording != null)
+                  _RecordingBar(
+                    recording: _recording!,
+                    holding: _holding,
+                    onCancel: () => _finishRecording(send: false),
+                    onSend: () => _finishRecording(send: true),
+                  )
+                else
                 _Composer(
                   controller: _composer,
+                  onMicTap: _composerEmpty && _staged.isEmpty && _editing == null && widget.startRecording != null && state.canSend
+                      ? () => _startRecording(hold: false)
+                      : null,
+                  onMicHoldStart: () {
+                    _pressing = true;
+                    _startRecording(hold: true);
+                  },
+                  onMicHoldEnd: () {
+                    _pressing = false;
+                    if (_holding) _finishRecording(send: true);
+                  },
+                  onMicHoldCancel: () {
+                    _pressing = false;
+                    if (_holding) _finishRecording(send: false);
+                  },
                   enabled: state.canSend,
                   onChanged: _onComposerChanged,
                   onSend: () => _send(context),
@@ -574,6 +796,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ],
             ),
+          ),
           ),
         );
       },
@@ -652,6 +875,18 @@ class _ChatScreenState extends State<ChatScreen> {
                 ChatReactionToggled(message.id, emoji, remove),
               ),
           attachmentBuilder: (attachment) {
+            final player = widget.voicePlayer;
+            if (attachment.voice && player != null) {
+              return VoiceMessageView(
+                attachment: attachment,
+                player: player,
+                outgoing: message.isOutgoing,
+                uploadProgress: state.uploads[message.id],
+                load: () async =>
+                    _bytesOf(attachment) ??
+                    await widget.onDownloadAttachment!(attachment, (_) {}),
+              );
+            }
             final bytes = _bytesOf(attachment);
             if (bytes == null) _maybeAutoDownload(attachment);
             final download = _downloads[attachment.blobId] ??
@@ -673,9 +908,36 @@ class _ChatScreenState extends State<ChatScreen> {
             );
           },
         );
-        final swipeable = message.seq == null
-            ? bubble
-            : _SwipeToReply(onReply: () => _startReply(message), child: bubble);
+        final selecting = _selection.isNotEmpty;
+        final Widget swipeable;
+        if (selecting) {
+          // While selecting, a tap picks the message instead of acting on it.
+          final picked = _selection.contains(message.id);
+          swipeable = GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => _toggleSelected(message),
+            child: Container(
+              color: picked ? context.pond.accentSoft : null,
+              child: Row(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(left: 10),
+                    child: Icon(
+                      picked ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+                      size: 22,
+                      color: picked ? context.pond.accent : context.pond.inkMuted,
+                    ),
+                  ),
+                  Expanded(child: AbsorbPointer(child: bubble)),
+                ],
+              ),
+            ),
+          );
+        } else {
+          swipeable = message.seq == null
+              ? bubble
+              : _SwipeToReply(onReply: () => _startReply(message), child: bubble);
+        }
         final newDay = previous == null || !isSameDay(previous.sentAt, message.sentAt);
         final unreadStart = message.id == state.firstUnreadId;
         return KeyedSubtree(
@@ -763,6 +1025,58 @@ class _UnreadDivider extends StatelessWidget {
           fontWeight: FontWeight.w700,
           color: pond.accent,
         ),
+      ),
+    );
+  }
+}
+
+/// Replaces the header while messages are selected.
+class _SelectionBar extends StatelessWidget {
+  const _SelectionBar({
+    required this.count,
+    required this.onCancel,
+    this.onCopy,
+    this.onForward,
+    this.onDelete,
+  });
+
+  final int count;
+  final VoidCallback onCancel;
+  final VoidCallback? onCopy;
+  final VoidCallback? onForward;
+  final VoidCallback? onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final pond = context.pond;
+    final l10n = AppLocalizations.of(context);
+    return Container(
+      padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+      decoration: BoxDecoration(
+        color: pond.accentSoft,
+        border: Border(bottom: BorderSide(color: pond.outline)),
+      ),
+      child: Row(
+        children: [
+          IconButton(tooltip: l10n.cancel, onPressed: onCancel, icon: const Icon(Icons.close_rounded)),
+          const SizedBox(width: 4),
+          Expanded(
+            child: Text(
+              l10n.selectedCount(count),
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: pond.onAccentSoft),
+            ),
+          ),
+          if (onCopy != null)
+            IconButton(tooltip: l10n.actionCopy, onPressed: onCopy, icon: const Icon(Icons.copy_rounded)),
+          if (onForward != null)
+            IconButton(tooltip: l10n.actionForward, onPressed: onForward, icon: const Icon(Icons.shortcut_rounded)),
+          if (onDelete != null)
+            IconButton(
+              tooltip: l10n.actionDelete,
+              onPressed: onDelete,
+              icon: Icon(Icons.delete_outline_rounded, color: pond.danger),
+            ),
+        ],
       ),
     );
   }
@@ -1218,6 +1532,85 @@ class _StagedAttachments extends StatelessWidget {
     );
   }
 }
+/// Replaces the composer while a voice message is recorded.
+class _RecordingBar extends StatelessWidget {
+  const _RecordingBar({
+    required this.recording,
+    required this.holding,
+    required this.onCancel,
+    required this.onSend,
+  });
+
+  final VoiceRecording recording;
+  final bool holding;
+  final VoidCallback onCancel;
+  final VoidCallback onSend;
+
+  @override
+  Widget build(BuildContext context) {
+    final pond = context.pond;
+    final l10n = AppLocalizations.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 6, 10, 12),
+      child: Row(
+        children: [
+          IconButton(
+            tooltip: l10n.voiceDiscard,
+            onPressed: onCancel,
+            icon: Icon(Icons.delete_outline_rounded, color: pond.danger),
+          ),
+          const SizedBox(width: 4),
+          Icon(Icons.fiber_manual_record_rounded, color: pond.danger, size: 14),
+          const SizedBox(width: 6),
+          ValueListenableBuilder<Duration>(
+            valueListenable: recording.elapsed,
+            builder: (_, d, _) => Text(
+              '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}',
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, fontFeatures: [FontFeature.tabularFigures()]),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: holding
+                ? Text(
+                    l10n.voiceSlideToCancel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: pond.inkMuted),
+                  )
+                : ValueListenableBuilder<double>(
+                    valueListenable: recording.level,
+                    builder: (_, level, _) => ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: LinearProgressIndicator(
+                        value: level,
+                        minHeight: 6,
+                        color: pond.accent,
+                        backgroundColor: pond.lilyRaised,
+                      ),
+                    ),
+                  ),
+          ),
+          const SizedBox(width: 8),
+          if (!holding)
+            IconButton(
+              tooltip: l10n.send,
+              onPressed: onSend,
+              style: IconButton.styleFrom(
+                backgroundColor: pond.accent,
+                foregroundColor: pond.onAccent,
+                fixedSize: const Size(46, 46),
+              ),
+              icon: const Icon(Icons.arrow_upward_rounded, size: 21),
+            )
+          else
+            Icon(Icons.mic_rounded, color: pond.accent, size: 28),
+        ],
+      ),
+    );
+  }
+}
+
 /// The composer: attach, the text field, send.
 class _Composer extends StatelessWidget {
   const _Composer({
@@ -1226,7 +1619,17 @@ class _Composer extends StatelessWidget {
     required this.onSend,
     this.onChanged,
     this.onAttach,
+    this.onMicTap,
+    this.onMicHoldStart,
+    this.onMicHoldEnd,
+    this.onMicHoldCancel,
   });
+
+  /// Set when there is nothing to send: the send button is a microphone.
+  final VoidCallback? onMicTap;
+  final VoidCallback? onMicHoldStart;
+  final VoidCallback? onMicHoldEnd;
+  final VoidCallback? onMicHoldCancel;
 
   final TextEditingController controller;
   final bool enabled;
@@ -1279,6 +1682,27 @@ class _Composer extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
+          if (onMicTap != null)
+            GestureDetector(
+              onLongPressStart: (_) => onMicHoldStart?.call(),
+              onLongPressEnd: (_) => onMicHoldEnd?.call(),
+              // Sliding away from the button throws the recording away.
+              onLongPressMoveUpdate: (d) {
+                if (d.offsetFromOrigin.dx < -90) onMicHoldCancel?.call();
+              },
+              child: IconButton(
+                tooltip: l10n.voiceRecord,
+                onPressed: onMicTap,
+                style: IconButton.styleFrom(
+                  backgroundColor: pond.accent,
+                  foregroundColor: pond.onAccent,
+                  fixedSize: const Size(46, 46),
+                  shape: square,
+                ),
+                icon: const Icon(Icons.mic_rounded, size: 22),
+              ),
+            )
+          else
           IconButton(
             tooltip: l10n.send,
             onPressed: enabled ? onSend : null,

@@ -835,4 +835,94 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get searchOnServer => 'Старые сообщения с сервера';
+
+  @override
+  String get actionSelect => 'Выбрать';
+
+  @override
+  String selectedCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'Выбрано: $count',
+      many: 'Выбрано: $count',
+      few: 'Выбрано: $count',
+      one: 'Выбрано: $count',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String deleteMessagesTitle(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'Удалить $count сообщения?',
+      many: 'Удалить $count сообщений?',
+      few: 'Удалить $count сообщения?',
+      one: 'Удалить сообщение?',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get voicePlay => 'Слушать';
+
+  @override
+  String get voicePause => 'Пауза';
+
+  @override
+  String get voiceRecord =>
+      'Голосовое: нажмите или удерживайте и отпустите, чтобы отправить';
+
+  @override
+  String get voiceDiscard => 'Удалить';
+
+  @override
+  String get voiceSlideToCancel => '‹ влево — отмена';
+
+  @override
+  String get micPermission =>
+      'Нет доступа к микрофону. Разрешите его в настройках системы.';
+
+  @override
+  String get micFailed => 'Не удалось включить микрофон';
+
+  @override
+  String get sound => 'Звук';
+
+  @override
+  String get microphone => 'Микрофон';
+
+  @override
+  String get microphoneDefault => 'Системный по умолчанию';
+
+  @override
+  String get noiseSuppression => 'Шумоподавление';
+
+  @override
+  String get noiseSuppressionHint =>
+      'Убирает из голоса шум вентилятора, улицы, клавиатуры';
+
+  @override
+  String get autoGain => 'Выравнивать громкость';
+
+  @override
+  String get autoGainHint => 'Тихую речь делает громче до комфортного уровня';
+
+  @override
+  String get micTest => 'Проверить микрофон';
+
+  @override
+  String get micTestHint =>
+      'Запишет три секунды и проиграет — так вас услышат другие';
+
+  @override
+  String get micTestRecording => 'Говорите…';
+
+  @override
+  String get micTestPlaying => 'Проигрываю…';
+
+  @override
+  String get previewVoiceShort => 'Голосовое сообщение';
 }

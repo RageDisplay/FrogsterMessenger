@@ -3,6 +3,8 @@ library;
 
 import 'package:flutter/material.dart';
 
+import '../../../data/audio/voice_player.dart';
+import '../../../data/audio/voice_recording.dart';
 import '../../../data/local/preferences.dart';
 import '../../../data/models/models.dart';
 import '../../../l10n/app_localizations.dart';
@@ -27,8 +29,16 @@ class SettingsScreen extends StatelessWidget {
     this.onChangeAvatar,
     this.onRemoveAvatar,
     this.onSetLastSeenVisible,
+    this.soundSettings = true,
+    this.voicePlayer,
     this.appVersion = '',
   });
+
+  /// Off in tests, which have no microphones to list.
+  final bool soundSettings;
+
+  /// Plays back a microphone test.
+  final VoicePlayer? voicePlayer;
 
   final Account account;
 
@@ -137,6 +147,10 @@ class SettingsScreen extends StatelessWidget {
                 ],
               ),
             ),
+            if (soundSettings) ...[
+              _SectionTitle(l10n.sound),
+              _SoundSection(preferences: preferences, player: voicePlayer),
+            ],
             _SectionTitle(l10n.notifications),
             _Pad(
               padding: const EdgeInsets.symmetric(vertical: 6),
@@ -483,6 +497,136 @@ class _ProfileCardState extends State<_ProfileCard> {
               onPressed: _edit,
               icon: const Icon(Icons.edit_outlined),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Which microphone, and what is done to the sound.
+class _SoundSection extends StatefulWidget {
+  const _SoundSection({required this.preferences, this.player});
+
+  final AppPreferences preferences;
+  final VoicePlayer? player;
+
+  @override
+  State<_SoundSection> createState() => _SoundSectionState();
+}
+
+enum _TestStage { idle, recording, playing }
+
+class _SoundSectionState extends State<_SoundSection> {
+  List<InputDevice>? _devices;
+  var _test = _TestStage.idle;
+  VoiceRecording? _recording;
+
+  @override
+  void initState() {
+    super.initState();
+    listMicrophones().then((d) {
+      if (mounted) setState(() => _devices = d);
+    }).catchError((Object _) {
+      if (mounted) setState(() => _devices = const []);
+    });
+  }
+
+  @override
+  void dispose() {
+    _recording?.cancel();
+    super.dispose();
+  }
+
+  /// Three seconds through the same chain a message goes through, played
+  /// straight back.
+  Future<void> _runTest() async {
+    final l10n = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final recording = await VoiceRecording.start(widget.preferences);
+      setState(() {
+        _recording = recording;
+        _test = _TestStage.recording;
+      });
+      await Future<void>.delayed(const Duration(seconds: 3));
+      final clip = await recording.finish();
+      recording.dispose();
+      _recording = null;
+      if (!mounted || clip == null) return;
+      setState(() => _test = _TestStage.playing);
+      final player = widget.player;
+      if (player != null) {
+        await player.toggle('mic-test-${DateTime.now().millisecondsSinceEpoch}', () async => clip.ogg);
+        await Future<void>.delayed(clip.duration + const Duration(milliseconds: 300));
+      }
+    } on RecordingException catch (e) {
+      messenger.showSnackBar(SnackBar(
+        content: Text(e.problem == RecordingProblem.permission ? l10n.micPermission : l10n.micFailed),
+      ));
+    } finally {
+      if (mounted) setState(() => _test = _TestStage.idle);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    final prefs = widget.preferences;
+    final devices = _devices;
+    final known = devices?.any((d) => d.id == prefs.microphone) ?? false;
+    return _Pad(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Column(
+        children: [
+          ListTile(
+            leading: const Icon(Icons.mic_none_rounded),
+            title: Text(l10n.microphone),
+            subtitle: devices == null
+                ? const LinearProgressIndicator(minHeight: 2)
+                : DropdownButton<String?>(
+                    isExpanded: true,
+                    underline: const SizedBox.shrink(),
+                    value: known ? prefs.microphone : null,
+                    items: [
+                      DropdownMenuItem(value: null, child: Text(l10n.microphoneDefault)),
+                      for (final d in devices)
+                        DropdownMenuItem(
+                          value: d.id,
+                          child: Text(d.label.isEmpty ? d.id : d.label, overflow: TextOverflow.ellipsis),
+                        ),
+                    ],
+                    onChanged: _test == _TestStage.idle ? prefs.setMicrophone : null,
+                  ),
+          ),
+          SwitchListTile(
+            secondary: const Icon(Icons.noise_aware_rounded),
+            title: Text(l10n.noiseSuppression),
+            subtitle: Text(l10n.noiseSuppressionHint),
+            value: prefs.noiseSuppression,
+            onChanged: prefs.setNoiseSuppression,
+          ),
+          SwitchListTile(
+            secondary: const Icon(Icons.graphic_eq_rounded),
+            title: Text(l10n.autoGain),
+            subtitle: Text(l10n.autoGainHint),
+            value: prefs.autoGain,
+            onChanged: prefs.setAutoGain,
+          ),
+          ListTile(
+            leading: const Icon(Icons.record_voice_over_outlined),
+            title: Text(switch (_test) {
+              _TestStage.idle => l10n.micTest,
+              _TestStage.recording => l10n.micTestRecording,
+              _TestStage.playing => l10n.micTestPlaying,
+            }),
+            subtitle: _test == _TestStage.recording && _recording != null
+                ? ValueListenableBuilder<double>(
+                    valueListenable: _recording!.level,
+                    builder: (_, level, _) => LinearProgressIndicator(value: level, minHeight: 6),
+                  )
+                : Text(l10n.micTestHint),
+            onTap: _test == _TestStage.idle ? _runTest : null,
+          ),
         ],
       ),
     );

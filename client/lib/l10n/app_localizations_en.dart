@@ -831,4 +831,89 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get searchOnServer => 'Older messages from the server';
+
+  @override
+  String get actionSelect => 'Select';
+
+  @override
+  String selectedCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count selected',
+      one: '$count selected',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String deleteMessagesTitle(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 'Delete $count messages?',
+      one: 'Delete the message?',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get voicePlay => 'Play';
+
+  @override
+  String get voicePause => 'Pause';
+
+  @override
+  String get voiceRecord => 'Voice message: tap, or hold and let go to send';
+
+  @override
+  String get voiceDiscard => 'Discard';
+
+  @override
+  String get voiceSlideToCancel => '‹ slide to cancel';
+
+  @override
+  String get micPermission =>
+      'Frogster may not use the microphone. Allow it in the system settings.';
+
+  @override
+  String get micFailed => 'The microphone did not start';
+
+  @override
+  String get sound => 'Sound';
+
+  @override
+  String get microphone => 'Microphone';
+
+  @override
+  String get microphoneDefault => 'System default';
+
+  @override
+  String get noiseSuppression => 'Noise suppression';
+
+  @override
+  String get noiseSuppressionHint =>
+      'Removes fans, traffic and keyboards from your voice';
+
+  @override
+  String get autoGain => 'Level my voice';
+
+  @override
+  String get autoGainHint => 'Brings quiet speech up to a comfortable level';
+
+  @override
+  String get micTest => 'Test the microphone';
+
+  @override
+  String get micTestHint =>
+      'Records three seconds and plays them back as others will hear you';
+
+  @override
+  String get micTestRecording => 'Speak now…';
+
+  @override
+  String get micTestPlaying => 'Playing back…';
+
+  @override
+  String get previewVoiceShort => 'Voice message';
 }

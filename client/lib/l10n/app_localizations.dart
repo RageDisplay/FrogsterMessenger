@@ -1567,6 +1567,138 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Older messages from the server'**
   String get searchOnServer;
+
+  /// No description provided for @actionSelect.
+  ///
+  /// In en, this message translates to:
+  /// **'Select'**
+  String get actionSelect;
+
+  /// No description provided for @selectedCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one{{count} selected} other{{count} selected}}'**
+  String selectedCount(int count);
+
+  /// No description provided for @deleteMessagesTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, one{Delete the message?} other{Delete {count} messages?}}'**
+  String deleteMessagesTitle(int count);
+
+  /// No description provided for @voicePlay.
+  ///
+  /// In en, this message translates to:
+  /// **'Play'**
+  String get voicePlay;
+
+  /// No description provided for @voicePause.
+  ///
+  /// In en, this message translates to:
+  /// **'Pause'**
+  String get voicePause;
+
+  /// No description provided for @voiceRecord.
+  ///
+  /// In en, this message translates to:
+  /// **'Voice message: tap, or hold and let go to send'**
+  String get voiceRecord;
+
+  /// No description provided for @voiceDiscard.
+  ///
+  /// In en, this message translates to:
+  /// **'Discard'**
+  String get voiceDiscard;
+
+  /// No description provided for @voiceSlideToCancel.
+  ///
+  /// In en, this message translates to:
+  /// **'‹ slide to cancel'**
+  String get voiceSlideToCancel;
+
+  /// No description provided for @micPermission.
+  ///
+  /// In en, this message translates to:
+  /// **'Frogster may not use the microphone. Allow it in the system settings.'**
+  String get micPermission;
+
+  /// No description provided for @micFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'The microphone did not start'**
+  String get micFailed;
+
+  /// No description provided for @sound.
+  ///
+  /// In en, this message translates to:
+  /// **'Sound'**
+  String get sound;
+
+  /// No description provided for @microphone.
+  ///
+  /// In en, this message translates to:
+  /// **'Microphone'**
+  String get microphone;
+
+  /// No description provided for @microphoneDefault.
+  ///
+  /// In en, this message translates to:
+  /// **'System default'**
+  String get microphoneDefault;
+
+  /// No description provided for @noiseSuppression.
+  ///
+  /// In en, this message translates to:
+  /// **'Noise suppression'**
+  String get noiseSuppression;
+
+  /// No description provided for @noiseSuppressionHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Removes fans, traffic and keyboards from your voice'**
+  String get noiseSuppressionHint;
+
+  /// No description provided for @autoGain.
+  ///
+  /// In en, this message translates to:
+  /// **'Level my voice'**
+  String get autoGain;
+
+  /// No description provided for @autoGainHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Brings quiet speech up to a comfortable level'**
+  String get autoGainHint;
+
+  /// No description provided for @micTest.
+  ///
+  /// In en, this message translates to:
+  /// **'Test the microphone'**
+  String get micTest;
+
+  /// No description provided for @micTestHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Records three seconds and plays them back as others will hear you'**
+  String get micTestHint;
+
+  /// No description provided for @micTestRecording.
+  ///
+  /// In en, this message translates to:
+  /// **'Speak now…'**
+  String get micTestRecording;
+
+  /// No description provided for @micTestPlaying.
+  ///
+  /// In en, this message translates to:
+  /// **'Playing back…'**
+  String get micTestPlaying;
+
+  /// No description provided for @previewVoiceShort.
+  ///
+  /// In en, this message translates to:
+  /// **'Voice message'**
+  String get previewVoiceShort;
 }
 
 class _AppLocalizationsDelegate

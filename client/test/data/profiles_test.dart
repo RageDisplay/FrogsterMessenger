@@ -167,12 +167,26 @@ void main() {
     test('a new version replaces the old picture, a removed one goes', () async {
       await settled(AvatarOwner.user, 'u1', 1);
       remote['user_u1'] = Uint8List.fromList([9]);
-      expect(await settled(AvatarOwner.user, 'u1', 2), [9]);
-      expect(dir.listSync().map((f) => f.uri.pathSegments.last), ['user_u1_2']);
+      // The old picture stays up while the new one loads: no flicker.
+      final value = store.watch(AvatarOwner.user, 'u1', 2);
+      expect(value.value, [1, 2, 3]);
+      // Disk writes run behind; wait for the state, not a guessed delay.
+      Future<void> until(bool Function() done) async {
+        for (var i = 0; i < 200 && !done(); i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+      }
+
+      List<String> onDisk() => dir.listSync().map((f) => f.uri.pathSegments.last).toList();
+
+      await until(() => value.value?.length == 1);
+      expect(value.value, [9]);
+      await until(() => onDisk().length == 1 && onDisk().single == 'user_u1_2');
+      expect(onDisk(), ['user_u1_2']);
 
       expect(store.watch(AvatarOwner.user, 'u1', -3).value, isNull);
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-      expect(dir.listSync(), isEmpty);
+      await until(() => onDisk().isEmpty);
+      expect(onDisk(), isEmpty);
     });
 
     test('nothing is fetched for someone without a picture', () async {

@@ -3,7 +3,7 @@
 # One image for both binaries: frogsterd (API + WebSocket) and filed
 # (attachments). The compose file picks which one a container runs.
 
-FROM golang:1.25.3-alpine AS build
+FROM golang:1.26.10-alpine AS build
 WORKDIR /src
 
 COPY go.mod go.sum ./

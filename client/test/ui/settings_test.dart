@@ -16,6 +16,7 @@ Widget _settings({
   Future<void> Function(String)? deleteAccount,
 }) =>
     localized(SettingsScreen(
+        soundSettings: false,
       account: _account,
       server: 'chat.example.com',
       preferences: AppPreferences(MemorySecureValues()),

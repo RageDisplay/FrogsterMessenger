@@ -437,6 +437,13 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
+  frogster_audio:
+    dependency: "direct main"
+    description:
+      path: "packages/frogster_audio"
+      relative: true
+    source: path
+    version: "0.1.0"
   get_it:
     dependency: "direct main"
     description:

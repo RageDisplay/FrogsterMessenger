@@ -429,5 +429,41 @@
   "privacy": "Privacy",
   "lastSeenVisible": "Show when I was online",
   "lastSeenVisibleHint": "Off: others see \"recently\", and you see the same of them",
-  "searchOnServer": "Older messages from the server"
+  "searchOnServer": "Older messages from the server",
+  "actionSelect": "Select",
+  "selectedCount": "{count, plural, one{{count} selected} other{{count} selected}}",
+  "@selectedCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "deleteMessagesTitle": "{count, plural, one{Delete the message?} other{Delete {count} messages?}}",
+  "@deleteMessagesTitle": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "voicePlay": "Play",
+  "voicePause": "Pause",
+  "voiceRecord": "Voice message: tap, or hold and let go to send",
+  "voiceDiscard": "Discard",
+  "voiceSlideToCancel": "‹ slide to cancel",
+  "micPermission": "Frogster may not use the microphone. Allow it in the system settings.",
+  "micFailed": "The microphone did not start",
+  "sound": "Sound",
+  "microphone": "Microphone",
+  "microphoneDefault": "System default",
+  "noiseSuppression": "Noise suppression",
+  "noiseSuppressionHint": "Removes fans, traffic and keyboards from your voice",
+  "autoGain": "Level my voice",
+  "autoGainHint": "Brings quiet speech up to a comfortable level",
+  "micTest": "Test the microphone",
+  "micTestHint": "Records three seconds and plays them back as others will hear you",
+  "micTestRecording": "Speak now…",
+  "micTestPlaying": "Playing back…",
+  "previewVoiceShort": "Voice message"
 }

@@ -60,6 +60,9 @@ dependencies:
   record: 7.1.2
   audioplayers: 6.8.1
   image: ^4.12.0
+  # RNNoise and Opus, built from source for each platform.
+  frogster_audio:
+    path: packages/frogster_audio
 
 dev_dependencies:
   flutter_test:

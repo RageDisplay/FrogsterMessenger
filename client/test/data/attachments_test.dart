@@ -228,8 +228,11 @@ void main() {
       expect(blobs.downloads, 1);
 
       // A new start: memory is empty, the disk is not.
+      final stored = File('${cacheDir.path}${Platform.pathSeparator}${attachment.blobId}');
+      for (var i = 0; i < 100 && !stored.existsSync(); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
       final restarted = AttachmentRepository(blobs, cacheDir: cacheDir);
-      await Future<void>.delayed(const Duration(milliseconds: 50));
       expect(await restarted.download(attachment), photo);
       expect(blobs.downloads, 1);
 
@@ -241,8 +244,11 @@ void main() {
       final photo = bytesOf(5000);
       final attachment = await uploaded(photo);
       await bobFiles.download(attachment);
-      await Future<void>.delayed(const Duration(milliseconds: 50));
       final file = File('${cacheDir.path}${Platform.pathSeparator}${attachment.blobId}');
+      // The cache is written behind the download; wait for it, not a guess.
+      for (var i = 0; i < 100 && !file.existsSync(); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
       final damaged = await file.readAsBytes();
       damaged[100] ^= 0xFF;
       await file.writeAsBytes(damaged);

@@ -10,6 +10,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import 'crypto/crypto_engine.dart';
+import 'data/audio/voice_player.dart';
+import 'data/audio/voice_recording.dart';
 import 'crypto/secure_key_storage.dart';
 import 'crypto/state_sealer.dart';
 import 'data/local/account_store.dart';
@@ -200,6 +202,9 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
   MessageRepository? _repository;
   AttachmentRepository? _attachments;
   AvatarStore? _avatars;
+
+  /// One voice message at a time, across every chat.
+  final _voicePlayer = VoicePlayer();
   PresenceTracker? _presence;
   KeyMaintenance? _keyMaintenance;
 
@@ -857,6 +862,7 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
             _signOut(forget: forget);
           },
           appVersion: appVersion,
+          voicePlayer: _voicePlayer,
           loadProfile: _api.me,
           onSaveProfile: (name, bio) => _api.updateMe(displayName: name, bio: bio),
           onChangeAvatar: () async {
@@ -958,6 +964,7 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
     _arrivalSub?.cancel();
     _tapSub?.cancel();
     _notifications.dispose();
+    _voicePlayer.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _chatList.dispose();
     _repository?.dispose();
@@ -1088,6 +1095,8 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
         cachedAttachment: (attachment) => _attachments?.cached(attachment.blobId),
         onOpenAttachment: _openAttachment,
         onSaveAttachment: _saveAttachment,
+        voicePlayer: _voicePlayer,
+        startRecording: () => VoiceRecording.start(widget.preferences),
       ),
     );
   }

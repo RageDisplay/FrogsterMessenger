@@ -204,12 +204,13 @@ func (s *FileBlobStore) pathFor(id string) string {
 //
 // This is a path-traversal guard as much as a format check: an id like
 // "../../etc/passwd" reaching filepath.Join would escape the blob root.
+//
+// Only the canonical form the store hands out is accepted: uuid.Parse also
+// takes "urn:uuid:...", braces and undashed hex, none of which should ever
+// reach a file name.
 func validBlobID(id string) bool {
-	if len(id) < 3 {
-		return false
-	}
-	_, err := uuid.Parse(id)
-	return err == nil
+	parsed, err := uuid.Parse(id)
+	return err == nil && parsed.String() == id
 }
 
 // digestWriter tees writes into a SHA-256 hash while counting bytes, so the
