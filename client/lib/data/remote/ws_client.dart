@@ -135,6 +135,13 @@ class Envelope {
   /// Message ids, for frames about several messages at once.
   final List<String>? ids;
 
+  /// Whether this frame carries a cloud chat's plain payload.
+  ///
+  /// The server omits a zero `ct_type` from its frames, and zero is the
+  /// cloud type, so an absent type means cloud. Secret messages always name
+  /// theirs (1, 2 or 3).
+  bool get isCloudPayload => (cipherType ?? CipherTypes.cloud) == CipherTypes.cloud;
+
   /// The group epoch a secret-group message or sender key belongs to.
   final int? epoch;
 

@@ -869,7 +869,7 @@ class MessageRepository {
         // and one that failed to decrypt would fail the same way on every
         // reconnect. Cloud messages are not queued, so there is nothing to
         // acknowledge.
-        if (settled && envelope.cipherType != CipherTypes.cloud) {
+        if (settled && !envelope.isCloudPayload) {
           _acknowledge(envelope.id);
         }
       case EnvelopeType.senderKey:
@@ -936,7 +936,7 @@ class MessageRepository {
       if (chat == null) return true;
 
       final Uint8List plaintext;
-      if (envelope.cipherType == CipherTypes.cloud) {
+      if (envelope.isCloudPayload) {
         if (!chat.isCloud) {
           // Plaintext arriving in a secret chat is refused outright: it is
           // either a bug or an attempt to downgrade the conversation.

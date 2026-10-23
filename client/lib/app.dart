@@ -4,10 +4,10 @@ library;
 import 'dart:async';
 
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import 'crypto/attachment.dart';
@@ -96,6 +96,24 @@ class _FrogsterAppState extends State<FrogsterApp> {
         localizationsDelegates: AppLocalizations.localizationsDelegates,
         localeListResolutionCallback: (preferred, supported) =>
             resolveLocale(preferred, supported),
+        // The system bars follow the app's theme, not the phone's: left to
+        // themselves they keep white icons, invisible on the light theme.
+        builder: (context, child) {
+          final theme = Theme.of(context);
+          final light = theme.brightness == Brightness.light;
+          final icons = light ? Brightness.dark : Brightness.light;
+          return AnnotatedRegion<SystemUiOverlayStyle>(
+            value: SystemUiOverlayStyle(
+              statusBarColor: Colors.transparent,
+              statusBarIconBrightness: icons,
+              statusBarBrightness: light ? Brightness.light : Brightness.dark,
+              systemNavigationBarColor: theme.scaffoldBackgroundColor,
+              systemNavigationBarIconBrightness: icons,
+              systemNavigationBarDividerColor: Colors.transparent,
+            ),
+            child: child!,
+          );
+        },
         home: _AppRoot(preferences: _preferences),
       ),
     );

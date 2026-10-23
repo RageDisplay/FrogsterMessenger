@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What shows while Flutter starts: the app's own background with its icon,
+     not a white flash. Night variant in drawable-night*. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item><color android:color="#0F0D14"/></item>
+    <item android:width="96dp" android:height="96dp" android:gravity="center"
+        android:drawable="@mipmap/ic_launcher"/>
+</layer-list>

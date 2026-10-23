@@ -26,7 +26,10 @@ Usage: frogster <command>
   status              Show the services and their health.
   logs [service]      Follow logs (frogsterd, filed, caddy, postgres, redis).
   restart [service]   Restart everything or one service.
-  update              Pull the latest code and rebuild. Data and secrets stay.
+  update [--force]    Back up, get the latest code, rebuild and restart.
+                      Rolls back by itself if the new version does not start.
+                      Data and secrets stay. --force rebuilds even when the
+                      code has not changed.
   backup [--quiet]    Dump the database to /var/backups/frogster.
   restore FILE        Replace the database with a backup. Destroys current data.
   fingerprint         Print the certificate fingerprint for the app.
@@ -50,7 +53,72 @@ restart)
 	;;
 update)
 	need_root
-	exec "$DEPLOY/install.sh" --yes --dir "$DIR"
+	# The installer replaces this very file, and bash reads a script as it
+	# runs it. Run the update from a copy, so the replacement cannot pull
+	# the rest of the script out from under it.
+	if [[ -z "${FROGSTER_UPDATE_COPY:-}" ]]; then
+		copy="$(mktemp /tmp/frogster-update.XXXXXX)"
+		cp "$0" "$copy"
+		FROGSTER_UPDATE_COPY="$copy" FROGSTER_SELF="$0" exec bash "$copy" update "$@"
+	fi
+	trap 'rm -f "$FROGSTER_UPDATE_COPY"' EXIT
+	self="${FROGSTER_SELF:-$0}"
+	force=0
+	[[ "${1:-}" == "--force" ]] && force=1
+	git=(git -C "$DIR")
+
+	if [[ -n "$("${git[@]}" status --porcelain --untracked-files=no)" ]]; then
+		echo "frogster: $DIR has local changes; commit or discard them first:" >&2
+		"${git[@]}" status --short --untracked-files=no >&2
+		exit 1
+	fi
+	branch="$("${git[@]}" rev-parse --abbrev-ref HEAD)"
+	before="$("${git[@]}" rev-parse HEAD)"
+
+	echo "== Fetching $branch"
+	"${git[@]}" fetch --quiet origin "$branch"
+	after="$("${git[@]}" rev-parse "origin/$branch")"
+	if [[ "$before" == "$after" && $force -eq 0 ]]; then
+		echo "Already up to date ($("${git[@]}" log -1 --format='%h %s' HEAD))."
+		exit 0
+	fi
+	if [[ "$before" != "$after" ]]; then
+		echo "New in this update:"
+		if "${git[@]}" merge-base --is-ancestor "$before" "$after"; then
+			"${git[@]}" log --format='  %h %s' "$before..$after" | head -30
+		else
+			# The history on GitHub was rewritten (a force push, or the
+			# repository was recreated). The server never has commits of its
+			# own, so following the remote exactly is the right thing.
+			echo "  (history was rewritten upstream; switching to it)"
+			"${git[@]}" log --format='  %h %s' -10 "$after"
+		fi
+	fi
+
+	echo "== Backing up the database first"
+	"$self" backup
+
+	# The new code goes in place, then the installer builds and starts it.
+	# If it does not come up healthy, the previous version is put back.
+	"${git[@]}" reset --quiet --hard "$after"
+	if "$DEPLOY/install.sh" --yes --no-fetch --dir "$DIR"; then
+		echo ""
+		echo "Updated to $("${git[@]}" log -1 --format='%h %s' HEAD)."
+		exit 0
+	fi
+
+	echo "" >&2
+	echo "== The new version did not start; going back to $(git -C "$DIR" log -1 --format=%h "$before")" >&2
+	"${git[@]}" reset --quiet --hard "$before"
+	if "$DEPLOY/install.sh" --yes --no-fetch --dir "$DIR"; then
+		echo "Rolled back: the server runs the previous version again." >&2
+	else
+		echo "The rollback did not start either. Look at: sudo frogster logs frogsterd" >&2
+	fi
+	latest="$(find "$BACKUPS" -maxdepth 1 -name 'frogster-*.sql.gz' | sort -r | head -1)"
+	echo "If the database was changed by the failed version, restore it with:" >&2
+	echo "  sudo frogster restore $latest" >&2
+	exit 1
 	;;
 backup)
 	need_root

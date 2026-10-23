@@ -7,6 +7,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'pond_colors.dart';
 
@@ -90,6 +91,16 @@ class AppTheme {
         labelLarge: text.labelLarge?.copyWith(fontWeight: FontWeight.w600),
       ),
       appBarTheme: AppBarTheme(
+        // Screens with an app bar take its overlay style instead of the
+        // app-wide one, so it has to say the same thing.
+        systemOverlayStyle: SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          statusBarIconBrightness: brightness == Brightness.light ? Brightness.dark : Brightness.light,
+          statusBarBrightness: brightness,
+          systemNavigationBarColor: c.pond,
+          systemNavigationBarIconBrightness:
+              brightness == Brightness.light ? Brightness.dark : Brightness.light,
+        ),
         backgroundColor: c.pond,
         foregroundColor: c.ink,
         surfaceTintColor: Colors.transparent,

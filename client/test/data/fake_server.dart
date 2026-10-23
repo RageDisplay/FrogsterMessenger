@@ -375,8 +375,21 @@ class FakeDevice {
   void deliver(Map<String, dynamic> frame) {
     server.touch();
     if (!ws.connected) return; // offline: the real server would queue it
-    ws.push(frame);
+    ws.push(onTheWire(frame));
   }
+
+  /// The frame as the Go server actually sends it: every Envelope field is
+  /// `omitempty`, so zeros, empty strings and empty lists never arrive. A
+  /// cloud message's `ct_type` is 0 and is therefore missing on the wire --
+  /// the fake once sent it, and the bug that broke cloud chats hid here.
+  static Map<String, dynamic> onTheWire(Map<String, dynamic> frame) => {
+        for (final e in frame.entries)
+          if (!(e.value == null ||
+              e.value == 0 ||
+              e.value == '' ||
+              (e.value is List && (e.value as List).isEmpty)))
+            e.key: e.value,
+      };
 
   Future<List<Message>> messages(String chatId) => dao.messagesForChat(chatId, limit: 500);
 

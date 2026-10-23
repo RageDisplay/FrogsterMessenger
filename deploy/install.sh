@@ -27,6 +27,7 @@ ASSUME_YES=0
 NO_FIREWALL=0
 SELF_SIGNED=0
 FORCE_OS=0
+NO_FETCH=0
 
 # ---------------------------------------------------------------- output ----
 
@@ -83,6 +84,9 @@ while [[ $# -gt 0 ]]; do
 	--no-firewall) NO_FIREWALL=1; shift ;;
 	--yes | -y) ASSUME_YES=1; shift ;;
 	--force) FORCE_OS=1; shift ;;
+	# Used by `frogster update`, which has already put the code it wants
+	# in place and only needs it built and started.
+	--no-fetch) NO_FETCH=1; shift ;;
 	-h | --help) usage; exit 0 ;;
 	*) die "unknown option: $1 (see --help)" ;;
 	esac
@@ -194,7 +198,9 @@ ok "$(docker --version)"
 
 step "Fetching Frogster"
 
-if [[ -d "$INSTALL_DIR/.git" ]]; then
+if [[ $NO_FETCH -eq 1 ]]; then
+	ok "using $INSTALL_DIR as it is"
+elif [[ -d "$INSTALL_DIR/.git" ]]; then
 	if [[ -n "$(git -C "$INSTALL_DIR" status --porcelain --untracked-files=no)" ]]; then
 		warn "local changes in $INSTALL_DIR; installing them as they are, not pulling"
 	elif ! git -C "$INSTALL_DIR" remote get-url origin >/dev/null 2>&1; then
@@ -203,7 +209,7 @@ if [[ -d "$INSTALL_DIR/.git" ]]; then
 		current="$(git -C "$INSTALL_DIR" rev-parse --abbrev-ref HEAD)"
 		git -C "$INSTALL_DIR" fetch --quiet origin "$current"
 		git -C "$INSTALL_DIR" merge --quiet --ff-only "origin/$current" ||
-			warn "could not fast-forward $current; installing the local version"
+			warn "could not fast-forward $current; installing the local version. 'sudo frogster update' handles a rewritten history."
 		ok "at $(git -C "$INSTALL_DIR" rev-parse --short HEAD) ($current)"
 	fi
 elif [[ "$INSTALL_DIR" == "$CHECKOUT" ]]; then
