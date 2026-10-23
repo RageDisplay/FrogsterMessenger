@@ -35,6 +35,9 @@ type createChatRequest struct {
 	// Title names a cloud group. Secret groups keep their title inside
 	// end-to-end encrypted messages, so one sent here is ignored.
 	Title string `json:"title,omitempty"`
+	// HideHistory starts members added later at the moment they join.
+	// Cloud groups only: a secret group has no history on the server.
+	HideHistory bool `json:"hide_history,omitempty"`
 }
 
 type memberJSON struct {
@@ -42,23 +45,27 @@ type memberJSON struct {
 	Username    string `json:"username"`
 	DisplayName string `json:"display_name,omitempty"`
 	Role        string `json:"role"`
+	// AvatarVersion is 0 or negative without an avatar.
+	AvatarVersion int `json:"avatar_version,omitempty"`
 }
 
 type chatJSON struct {
-	ID          string       `json:"id"`
-	Type        string       `json:"type"`
-	Mode        string       `json:"mode"`
-	Epoch       uint64       `json:"epoch"`
-	Title       string       `json:"title,omitempty"`
-	Role        string       `json:"role"`
-	LastSeq     int64        `json:"last_seq"`
-	LastReadSeq int64        `json:"last_read_seq"`
-	PeerReadSeq int64        `json:"peer_read_seq"`
-	ClearedSeq  int64        `json:"cleared_seq,omitempty"`
-	Unread      int64        `json:"unread"`
-	Members     []memberJSON `json:"members"`
-	Last        *messageJSON `json:"last,omitempty"`
-	CreatedAt   time.Time    `json:"created_at"`
+	ID            string       `json:"id"`
+	Type          string       `json:"type"`
+	Mode          string       `json:"mode"`
+	Epoch         uint64       `json:"epoch"`
+	Title         string       `json:"title,omitempty"`
+	Role          string       `json:"role"`
+	LastSeq       int64        `json:"last_seq"`
+	LastReadSeq   int64        `json:"last_read_seq"`
+	PeerReadSeq   int64        `json:"peer_read_seq"`
+	ClearedSeq    int64        `json:"cleared_seq,omitempty"`
+	Unread        int64        `json:"unread"`
+	Members       []memberJSON `json:"members"`
+	AvatarVersion int          `json:"avatar_version,omitempty"`
+	HideHistory   bool         `json:"hide_history,omitempty"`
+	Last          *messageJSON `json:"last,omitempty"`
+	CreatedAt     time.Time    `json:"created_at"`
 }
 
 type messageJSON struct {
@@ -77,26 +84,29 @@ type messageJSON struct {
 
 func (s *Server) chatJSON(c *store.ChatSummary) chatJSON {
 	out := chatJSON{
-		ID:          c.ID.String(),
-		Type:        c.Type,
-		Mode:        c.Mode,
-		Epoch:       c.Epoch,
-		Title:       s.store.OpenTitle(&c.Chat),
-		Role:        c.Role,
-		LastSeq:     c.LastSeq,
-		LastReadSeq: c.LastReadSeq,
-		PeerReadSeq: c.PeerReadSeq,
-		ClearedSeq:  c.ClearedSeq,
-		Unread:      c.Unread,
-		Members:     make([]memberJSON, 0, len(c.Members)),
-		CreatedAt:   c.CreatedAt,
+		ID:            c.ID.String(),
+		Type:          c.Type,
+		Mode:          c.Mode,
+		Epoch:         c.Epoch,
+		Title:         s.store.OpenTitle(&c.Chat),
+		Role:          c.Role,
+		LastSeq:       c.LastSeq,
+		LastReadSeq:   c.LastReadSeq,
+		PeerReadSeq:   c.PeerReadSeq,
+		ClearedSeq:    c.ClearedSeq,
+		Unread:        c.Unread,
+		Members:       make([]memberJSON, 0, len(c.Members)),
+		CreatedAt:     c.CreatedAt,
+		AvatarVersion: c.AvatarVersion,
+		HideHistory:   c.HideHistory,
 	}
 	for _, m := range c.Members {
 		out.Members = append(out.Members, memberJSON{
-			UserID:      m.UserID.String(),
-			Username:    m.Username,
-			DisplayName: m.DisplayName,
-			Role:        m.Role,
+			UserID:        m.UserID.String(),
+			Username:      m.Username,
+			DisplayName:   m.DisplayName,
+			Role:          m.Role,
+			AvatarVersion: m.AvatarVersion,
 		})
 	}
 	if c.Last != nil {
@@ -225,6 +235,7 @@ func (s *Server) createGroupChat(w http.ResponseWriter, r *http.Request, self uu
 		Mode:      req.Mode,
 		CreatorID: self,
 	}
+	chat.HideHistory = req.HideHistory && chat.IsCloud()
 	if chat.IsCloud() {
 		sealed, err := s.store.SealTitle(chat.ID, title)
 		if err != nil {
@@ -463,11 +474,13 @@ func (s *Server) adminGroup(w http.ResponseWriter, r *http.Request, self uuid.UU
 }
 
 type updateChatRequest struct {
-	Title string `json:"title"`
+	Title       *string `json:"title"`
+	HideHistory *bool   `json:"hide_history"`
 }
 
-// handleUpdateChat renames a cloud group. A secret group is renamed by a
-// message to its members, which the server cannot read.
+// handleUpdateChat renames a cloud group or changes what newcomers see of
+// its past. A secret group is renamed by a message to its members, which
+// the server cannot read; it has no history on the server to hide.
 func (s *Server) handleUpdateChat(w http.ResponseWriter, r *http.Request) {
 	claims, ok := claimsOrUnauthorized(w, r, s)
 	if !ok {
@@ -486,15 +499,28 @@ func (s *Server) handleUpdateChat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "a secret group's title is set end to end", s.log)
 		return
 	}
-	title := strings.TrimSpace(req.Title)
-	if !validTitle(title) {
-		writeErr(w, http.StatusBadRequest, "title must be 1-64 characters", s.log)
+	if req.Title == nil && req.HideHistory == nil {
+		writeErr(w, http.StatusBadRequest, "nothing to change", s.log)
 		return
 	}
-	if err := s.store.SetChatTitle(r.Context(), chat.ID, title); err != nil {
-		s.log.Error("set chat title", "err", err)
-		writeErr(w, http.StatusInternalServerError, "internal error", s.log)
-		return
+	if req.Title != nil {
+		title := strings.TrimSpace(*req.Title)
+		if !validTitle(title) {
+			writeErr(w, http.StatusBadRequest, "title must be 1-64 characters", s.log)
+			return
+		}
+		if err := s.store.SetChatTitle(r.Context(), chat.ID, title); err != nil {
+			s.log.Error("set chat title", "err", err)
+			writeErr(w, http.StatusInternalServerError, "internal error", s.log)
+			return
+		}
+	}
+	if req.HideHistory != nil {
+		if err := s.store.SetHideHistory(r.Context(), chat.ID, *req.HideHistory); err != nil {
+			s.log.Error("set hide history", "err", err)
+			writeErr(w, http.StatusInternalServerError, "internal error", s.log)
+			return
+		}
 	}
 	s.notifyMembers(r, chat.ID, chat.Epoch)
 	s.writeChat(w, r, chat.ID, claims.UserID, http.StatusOK)

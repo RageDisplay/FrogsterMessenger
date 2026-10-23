@@ -46,6 +46,18 @@ String formatDayLabel(BuildContext context, DateTime time, {DateTime? now}) {
 String formatDate(BuildContext context, DateTime time) =>
     DateFormat.yMMMd(_locale(context)).format(time.toLocal());
 
+/// When someone was last seen: "at 14:05", "yesterday at 14:05",
+/// "Oct 12 at 14:05".
+String formatLastSeen(BuildContext context, DateTime time, {DateTime? now}) {
+  final l10n = AppLocalizations.of(context);
+  final local = time.toLocal();
+  final days = _dateOnly(now ?? DateTime.now()).difference(_dateOnly(local)).inDays;
+  final clock = formatClock(context, local);
+  if (days <= 0) return l10n.lastSeenToday(clock);
+  if (days == 1) return l10n.lastSeenYesterday(clock);
+  return l10n.lastSeenDate(DateFormat.MMMd(_locale(context)).format(local), clock);
+}
+
 /// True when [a] and [b] fall on the same local calendar day.
 bool isSameDay(DateTime a, DateTime b) =>
     _dateOnly(a.toLocal()) == _dateOnly(b.toLocal());

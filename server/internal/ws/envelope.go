@@ -31,6 +31,13 @@ const (
 	// TypeChatUpdated tells members that a chat's metadata changed: it was
 	// created, renamed, or its membership (and with it the epoch) changed.
 	TypeChatUpdated = "chat_updated"
+
+	// TypePresence carries presence both ways. From a client, Kind says
+	// whether this device is "active" (in the foreground) or "idle". From
+	// the server, Sender names a contact and Kind their status as this user
+	// may see it: "online", "offline" with the last-seen time in Timestamp,
+	// or a vague "recently", "week", "month" or "long_ago".
+	TypePresence = "presence"
 )
 
 // SenderKeyAckPrefix marks a sender-key distribution in a delivered frame.

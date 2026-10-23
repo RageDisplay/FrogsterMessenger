@@ -13,6 +13,7 @@ import 'package:fixnum/fixnum.dart';
 import 'package:grpc/grpc.dart';
 
 import '../../crypto/attachment.dart';
+import '../repositories/attachment_repository.dart' show BlobTransport;
 import 'gen/frogster/v1/file.pbgrpc.dart' as pb;
 import 'server_config.dart';
 
@@ -35,7 +36,7 @@ class FileTransferException implements Exception {
   String toString() => 'FileTransferException: $message';
 }
 
-class FileClient {
+class FileClient implements BlobTransport {
   FileClient({required ServerConfig server})
       : _channel = ClientChannel(
           server.fileHost,
@@ -82,52 +83,47 @@ class FileClient {
   /// The returned [AttachmentKey] must be sent inside the encrypted chat
   /// message. Attaching it to the upload instead would hand the server the key
   /// to every file it stores.
+  @override
   Future<AttachmentKey> upload({
     required Uint8List plaintext,
     required String mimeType,
     String? fileName,
     void Function(TransferProgress)? onProgress,
+    void Function(Uint8List ciphertext)? onSealed,
   }) async {
     final sealed = await encryptAttachment(plaintext);
     final ciphertext = sealed.ciphertext;
+    onSealed?.call(ciphertext);
 
-    final requests = StreamController<pb.UploadRequest>();
-
-    // The init message declares size and digest up front so the server can
-    // reject an oversized upload before streaming it.
-    requests.add(pb.UploadRequest(
-      init: pb.UploadInit(
-        totalSize: Int64(ciphertext.length),
-        // Deliberately generic: the real MIME type stays inside the encrypted
-        // message, so the server cannot tell a photo from a document.
-        contentHint: 'attachment',
-        digest: sealed.digest,
-      ),
-    ));
-
-    // Chunked so a large file costs one buffer rather than its whole size in
-    // memory on either side.
-    unawaited(() async {
-      try {
-        for (var offset = 0; offset < ciphertext.length; offset += _chunkSize) {
-          final end = (offset + _chunkSize).clamp(0, ciphertext.length);
-          requests.add(pb.UploadRequest(
-            chunk: Uint8List.sublistView(ciphertext, offset, end),
-          ));
-          onProgress?.call(
-            TransferProgress(bytes: end, total: ciphertext.length),
-          );
-          // Yields to the event loop so a big upload does not freeze the UI.
-          await Future<void>.delayed(Duration.zero);
-        }
-      } finally {
-        await requests.close();
+    // A generator rather than a controller: gRPC pulls the next chunk only
+    // when the transport has room for it, so progress follows what has
+    // actually gone out instead of what was queued.
+    Stream<pb.UploadRequest> requests() async* {
+      // The init message declares size and digest up front so the server can
+      // reject an oversized upload before streaming it.
+      yield pb.UploadRequest(
+        init: pb.UploadInit(
+          totalSize: Int64(ciphertext.length),
+          // Deliberately generic: the real MIME type stays inside the
+          // encrypted message, so the server cannot tell a photo from a
+          // document.
+          contentHint: 'attachment',
+          digest: sealed.digest,
+        ),
+      );
+      // Chunked so a large file costs one buffer rather than its whole size
+      // in memory on either side.
+      for (var offset = 0; offset < ciphertext.length; offset += _chunkSize) {
+        final end = (offset + _chunkSize).clamp(0, ciphertext.length);
+        yield pb.UploadRequest(
+          chunk: Uint8List.sublistView(ciphertext, offset, end),
+        );
+        onProgress?.call(TransferProgress(bytes: end, total: ciphertext.length));
       }
-    }());
+    }
 
     try {
-      final response =
-          await _stub.upload(requests.stream, options: _callOptions);
+      final response = await _stub.upload(requests(), options: _callOptions);
 
       return AttachmentKey(
         blobId: response.blobId,
@@ -150,16 +146,31 @@ class FileClient {
     AttachmentKey attachment, {
     void Function(TransferProgress)? onProgress,
   }) async {
-    final parts = <int>[];
+    final ciphertext =
+        await downloadCiphertext(attachment.blobId, onProgress: onProgress);
+    return decryptAttachment(
+      ciphertext: ciphertext,
+      key: attachment.key,
+      digest: attachment.digest,
+    );
+  }
+
+  /// Fetches a blob as stored: still encrypted, unverified.
+  @override
+  Future<Uint8List> downloadCiphertext(
+    String blobId, {
+    void Function(TransferProgress)? onProgress,
+  }) async {
+    final parts = BytesBuilder(copy: false);
 
     try {
       final stream = _stub.download(
-        pb.DownloadRequest(blobId: attachment.blobId),
+        pb.DownloadRequest(blobId: blobId),
         options: _callOptions,
       );
 
       await for (final chunk in stream) {
-        parts.addAll(chunk.chunk);
+        parts.add(chunk.chunk);
         onProgress?.call(TransferProgress(
           bytes: parts.length,
           total: chunk.totalSize.toInt(),
@@ -168,15 +179,11 @@ class FileClient {
     } on GrpcError catch (e) {
       throw FileTransferException(_describe(e));
     }
-
-    return decryptAttachment(
-      ciphertext: Uint8List.fromList(parts),
-      key: attachment.key,
-      digest: attachment.digest,
-    );
+    return parts.takeBytes();
   }
 
   /// Deletes a blob we uploaded.
+  @override
   Future<bool> delete(String blobId) async {
     try {
       final response = await _stub.delete(

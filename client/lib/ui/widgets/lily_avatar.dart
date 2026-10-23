@@ -5,6 +5,7 @@
 /// every device.
 library;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../theme/pond_colors.dart';
@@ -18,6 +19,7 @@ class LilyAvatar extends StatelessWidget {
     this.icon,
     this.secret = false,
     this.online = false,
+    this.image,
   });
 
   /// Stable identity behind the colour, usually a username or chat id.
@@ -37,6 +39,9 @@ class LilyAvatar extends StatelessWidget {
   /// Shows the presence dot.
   final bool online;
 
+  /// A picture to show instead of the initial.
+  final Uint8List? image;
+
   @override
   Widget build(BuildContext context) {
     final pond = context.pond;
@@ -51,7 +56,18 @@ class LilyAvatar extends StatelessWidget {
         borderRadius: BorderRadius.circular(size * 0.31),
       ),
       alignment: Alignment.center,
-      child: icon != null
+      clipBehavior: image == null ? Clip.none : Clip.antiAlias,
+      child: image != null
+          ? Image.memory(
+              image!,
+              width: size,
+              height: size,
+              fit: BoxFit.cover,
+              gaplessPlayback: true,
+              cacheWidth: (size * MediaQuery.devicePixelRatioOf(context)).round(),
+              errorBuilder: (_, _, _) => const SizedBox.shrink(),
+            )
+          : icon != null
           ? Icon(icon, size: size * 0.42, color: foreground)
           : Text(
               initialOf(label),

@@ -34,16 +34,35 @@ func (s *Store) SessionByRefreshHash(ctx context.Context, hash string) (*models.
 }
 
 // ListSessions returns a user's non-expired sessions for the settings screen.
-func (s *Store) ListSessions(ctx context.Context, userID uuid.UUID) ([]models.ActiveSession, error) {
-	var out []models.ActiveSession
+func (s *Store) ListSessions(ctx context.Context, userID uuid.UUID) ([]SessionInfo, error) {
+	var out []SessionInfo
 	err := s.db.WithContext(ctx).
-		Where("user_id = ? AND revoked_at IS NULL AND expires_at > now()", userID).
-		Order("last_used_at DESC").
-		Find(&out).Error
+		Table("active_sessions").
+		Select("active_sessions.*, devices.device_name").
+		Joins("JOIN devices ON devices.id = active_sessions.device_id").
+		Where("active_sessions.user_id = ? AND active_sessions.revoked_at IS NULL AND active_sessions.expires_at > now()", userID).
+		Order("active_sessions.last_used_at DESC").
+		Scan(&out).Error
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
 	return out, nil
+}
+
+// SessionInfo is a session as the "active sessions" screen shows it: with
+// the name its device registered under.
+type SessionInfo struct {
+	models.ActiveSession
+	DeviceName string
+}
+
+// NoteSessionClient records the client a session was last used from, so an
+// app update shows up on the sessions screen without signing in again.
+func (s *Store) NoteSessionClient(ctx context.Context, id uuid.UUID, userAgent string) error {
+	return s.db.WithContext(ctx).
+		Model(&models.ActiveSession{}).
+		Where("id = ? AND user_agent <> ?", id, userAgent).
+		Update("user_agent", userAgent).Error
 }
 
 // RevokeSession invalidates a single session and retires the device behind it.

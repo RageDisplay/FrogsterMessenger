@@ -47,6 +47,13 @@ type Chat struct {
 	// epoch so that a removed member's key cannot decrypt later traffic.
 	Epoch uint64 `gorm:"not null;default:0" json:"epoch"`
 
+	// AvatarVersion is 0 without an avatar; cloud groups only.
+	AvatarVersion int `gorm:"not null;default:0" json:"avatar_version"`
+
+	// HideHistory starts new members of a cloud group at the moment they
+	// join, instead of showing them everything said before.
+	HideHistory bool `gorm:"not null;default:false" json:"hide_history"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"-"`
 
@@ -79,6 +86,10 @@ type ChatMember struct {
 
 	// LastReadSeq is how far this member has read.
 	LastReadSeq int64 `gorm:"not null;default:0" json:"last_read_seq"`
+
+	// ClearedSeq is where this member's view of the history starts: moved
+	// by "clear history", or set on joining a group that hides its past.
+	ClearedSeq int64 `gorm:"not null;default:0" json:"-"`
 }
 
 // IsActive reports whether the member currently belongs to the chat.

@@ -31,12 +31,16 @@ class ChatMember {
     required this.username,
     this.displayName = '',
     this.role = 'member',
+    this.avatarVersion = 0,
   });
 
   final String userId;
   final String username;
   final String displayName;
   final String role;
+
+  /// Positive when the member has an avatar; grows with each new one.
+  final int avatarVersion;
 
   bool get isAdmin => role == 'admin';
 
@@ -48,6 +52,7 @@ class ChatMember {
         'username': username,
         if (displayName.isNotEmpty) 'display_name': displayName,
         'role': role,
+        if (avatarVersion != 0) 'avatar_version': avatarVersion,
       };
 
   static ChatMember fromJson(Map<String, dynamic> json) => ChatMember(
@@ -55,6 +60,7 @@ class ChatMember {
         username: json['username'] as String,
         displayName: json['display_name'] as String? ?? '',
         role: json['role'] as String? ?? 'member',
+        avatarVersion: json['avatar_version'] as int? ?? 0,
       );
 }
 
@@ -80,9 +86,17 @@ class Chat {
     this.muted = false,
     this.archived = false,
     this.hidden = false,
+    this.avatarVersion = 0,
+    this.hideHistory = false,
   });
 
   final String id;
+
+  /// Positive when a cloud group has an avatar.
+  final int avatarVersion;
+
+  /// A cloud group that starts new members at the moment they join.
+  final bool hideHistory;
   final String type; // 'direct' | 'group'
   final int epoch;
   final ChatMode mode;
@@ -162,6 +176,8 @@ class Chat {
     bool? muted,
     bool? archived,
     bool? hidden,
+    int? avatarVersion,
+    bool? hideHistory,
   }) =>
       Chat(
         id: id,
@@ -183,6 +199,8 @@ class Chat {
         muted: muted ?? this.muted,
         archived: archived ?? this.archived,
         hidden: hidden ?? this.hidden,
+        avatarVersion: avatarVersion ?? this.avatarVersion,
+        hideHistory: hideHistory ?? this.hideHistory,
       );
 }
 
@@ -387,9 +405,60 @@ class AttachmentPayload {
     required this.size,
     required this.mimeType,
     this.fileName,
+    this.width,
+    this.height,
+    this.voice = false,
+    this.durationMs,
+    this.waveform,
   });
 
+  /// The placeholder a file carries while it is still being uploaded from
+  /// this device: shown at once, sent once the upload is done.
+  factory AttachmentPayload.uploading({
+    required String messageId,
+    required int size,
+    required String mimeType,
+    String? fileName,
+    int? width,
+    int? height,
+    bool voice = false,
+    int? durationMs,
+    String? waveform,
+  }) =>
+      AttachmentPayload(
+        blobId: '$localBlobPrefix$messageId',
+        key: '',
+        digest: '',
+        size: size,
+        mimeType: mimeType,
+        fileName: fileName,
+        width: width,
+        height: height,
+        voice: voice,
+        durationMs: durationMs,
+        waveform: waveform,
+      );
+
+  static const localBlobPrefix = 'local-';
+
   final String blobId;
+
+  /// True while the file is still on its way up from this device.
+  bool get isUploading => blobId.startsWith(localBlobPrefix);
+
+  /// Pixel size of an image, so its bubble has the right shape before the
+  /// image itself is loaded.
+  final int? width;
+  final int? height;
+
+  /// A recorded voice message rather than an audio file.
+  final bool voice;
+
+  /// Length of a voice message.
+  final int? durationMs;
+
+  /// Base64 of one loudness byte per bar of a voice message's waveform.
+  final String? waveform;
 
   /// Base64 of the AES-256 key. Never leaves the encrypted payload.
   final String key;
@@ -420,6 +489,11 @@ class AttachmentPayload {
         'size': size,
         'mime': mimeType,
         if (fileName != null) 'name': fileName,
+        'w': ?width,
+        'h': ?height,
+        if (voice) 'voice': true,
+        'dur': ?durationMs,
+        'wave': ?waveform,
       };
 
   static AttachmentPayload fromJson(Map<String, dynamic> json) =>
@@ -430,6 +504,27 @@ class AttachmentPayload {
         size: json['size'] as int,
         mimeType: json['mime'] as String,
         fileName: json['name'] as String?,
+        width: json['w'] as int?,
+        height: json['h'] as int?,
+        voice: json['voice'] as bool? ?? false,
+        durationMs: json['dur'] as int?,
+        waveform: json['wave'] as String?,
+      );
+
+  /// The same file once uploaded, or with any other field replaced.
+  AttachmentPayload copyWith({String? blobId, String? key, String? digest}) =>
+      AttachmentPayload(
+        blobId: blobId ?? this.blobId,
+        key: key ?? this.key,
+        digest: digest ?? this.digest,
+        size: size,
+        mimeType: mimeType,
+        fileName: fileName,
+        width: width,
+        height: height,
+        voice: voice,
+        durationMs: durationMs,
+        waveform: waveform,
       );
 }
 
@@ -466,6 +561,7 @@ class DeviceSession {
     required this.userAgent,
     required this.lastUsedAt,
     required this.isCurrent,
+    this.deviceName = '',
   });
 
   final String id;
@@ -473,6 +569,26 @@ class DeviceSession {
   final String userAgent;
   final DateTime lastUsedAt;
   final bool isCurrent;
+
+  /// The name the device registered under, such as "Windows PC".
+  final String deviceName;
+
+  /// The app version from a `Frogster/1.0.1 (windows)` user agent, or null
+  /// for older clients, which sent only the Dart SDK's default.
+  String? get appVersion {
+    final match = RegExp(r'^Frogster/(\S+)').firstMatch(userAgent);
+    return match?.group(1);
+  }
+
+  /// "Windows PC · Frogster 1.0.1", or as much of it as is known. Empty when
+  /// nothing is.
+  String get label {
+    final version = appVersion;
+    return [
+      if (deviceName.isNotEmpty) deviceName,
+      if (version != null) 'Frogster $version',
+    ].join(' · ');
+  }
 }
 
 /// Someone found by a user search.
@@ -482,12 +598,18 @@ class UserProfile {
     required this.username,
     this.displayName = '',
     this.bio = '',
+    this.avatarVersion = 0,
+    this.lastSeenVisible,
   });
 
   final String userId;
   final String username;
   final String displayName;
   final String bio;
+  final int avatarVersion;
+
+  /// The signed-in user's own privacy setting; null for anyone else.
+  final bool? lastSeenVisible;
 
   String get name => displayName.isNotEmpty ? displayName : username;
 
@@ -496,6 +618,54 @@ class UserProfile {
         username: json['username'] as String,
         displayName: json['display_name'] as String? ?? '',
         bio: json['bio'] as String? ?? '',
+        avatarVersion: json['avatar_version'] as int? ?? 0,
+        lastSeenVisible: json['last_seen_visible'] as bool?,
+      );
+}
+
+/// What we may see of whether someone is around.
+enum PresenceStatus {
+  online,
+
+  /// Offline, with the exact time in [Presence.lastSeen].
+  offline,
+
+  /// Vague, because they or we hide the exact time.
+  recently,
+  week,
+  month,
+  longAgo,
+
+  /// Not reported yet.
+  unknown;
+
+  static PresenceStatus parse(String? wire) => switch (wire) {
+        'online' => online,
+        'offline' => offline,
+        'recently' => recently,
+        'week' => week,
+        'month' => month,
+        'long_ago' => longAgo,
+        _ => unknown,
+      };
+}
+
+/// One person's presence as the server lets us see it.
+class Presence {
+  const Presence(this.status, [this.lastSeen]);
+
+  static const unknown = Presence(PresenceStatus.unknown);
+
+  final PresenceStatus status;
+  final DateTime? lastSeen;
+
+  bool get isOnline => status == PresenceStatus.online;
+
+  static Presence fromJson(Map<String, dynamic> json) => Presence(
+        PresenceStatus.parse(json['status'] as String?),
+        json['last_seen'] == null
+            ? null
+            : DateTime.fromMillisecondsSinceEpoch(json['last_seen'] as int),
       );
 }
 

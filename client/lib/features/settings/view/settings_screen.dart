@@ -9,7 +9,7 @@ import '../../../l10n/app_localizations.dart';
 import '../../../ui/format.dart';
 import '../../../ui/theme/app_theme.dart';
 import '../../../ui/theme/pond_colors.dart';
-import '../../../ui/widgets/lily_avatar.dart';
+import '../../../ui/widgets/avatars.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({
@@ -24,6 +24,9 @@ class SettingsScreen extends StatelessWidget {
     this.loadProfile,
     this.onSaveProfile,
     this.onDeleteAccount,
+    this.onChangeAvatar,
+    this.onRemoveAvatar,
+    this.onSetLastSeenVisible,
     this.appVersion = '',
   });
 
@@ -48,6 +51,12 @@ class SettingsScreen extends StatelessWidget {
   /// Closes the account for good; throws when the password is wrong.
   final Future<void> Function(String password)? onDeleteAccount;
 
+  /// Picks and uploads a new picture; null when the user changed their mind.
+  final Future<UserProfile?> Function()? onChangeAvatar;
+  final Future<UserProfile> Function()? onRemoveAvatar;
+
+  final Future<UserProfile> Function(bool visible)? onSetLastSeenVisible;
+
   final String appVersion;
 
   @override
@@ -67,7 +76,13 @@ class SettingsScreen extends StatelessWidget {
               server: server,
               load: loadProfile,
               save: onSaveProfile,
+              changeAvatar: onChangeAvatar,
+              removeAvatar: onRemoveAvatar,
             ),
+            if (onSetLastSeenVisible != null && loadProfile != null) ...[
+              _SectionTitle(l10n.privacy),
+              _PrivacySection(load: loadProfile!, setLastSeenVisible: onSetLastSeenVisible!),
+            ],
             _SectionTitle(l10n.appearance),
             _Pad(
               child: Column(
@@ -247,7 +262,7 @@ class SettingsScreen extends StatelessWidget {
       builder: (dialogContext) => AlertDialog(
         title: Text(l10n.signOutDeviceTitle),
         content: Text(l10n.signOutDeviceBody(
-          session.userAgent.isEmpty ? l10n.unknownDevice : session.userAgent,
+          session.label.isEmpty ? l10n.unknownDevice : session.label,
         )),
         actions: [
           TextButton(
@@ -314,12 +329,16 @@ class _ProfileCard extends StatefulWidget {
     required this.server,
     this.load,
     this.save,
+    this.changeAvatar,
+    this.removeAvatar,
   });
 
   final Account account;
   final String server;
   final Future<UserProfile> Function()? load;
   final Future<UserProfile> Function(String displayName, String bio)? save;
+  final Future<UserProfile?> Function()? changeAvatar;
+  final Future<UserProfile> Function()? removeAvatar;
 
   @override
   State<_ProfileCard> createState() => _ProfileCardState();
@@ -327,6 +346,43 @@ class _ProfileCard extends StatefulWidget {
 
 class _ProfileCardState extends State<_ProfileCard> {
   UserProfile? _profile;
+  var _busy = false;
+
+  Future<void> _avatarMenu() async {
+    final l10n = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: Text(l10n.avatarChoose),
+              onTap: () => Navigator.of(sheetContext).pop('set'),
+            ),
+            if ((_profile?.avatarVersion ?? 0) > 0 && widget.removeAvatar != null)
+              ListTile(
+                leading: Icon(Icons.delete_outline_rounded, color: context.pond.danger),
+                title: Text(l10n.avatarRemove, style: TextStyle(color: context.pond.danger)),
+                onTap: () => Navigator.of(sheetContext).pop('remove'),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (choice == null) return;
+    setState(() => _busy = true);
+    try {
+      final updated = choice == 'set' ? await widget.changeAvatar!() : await widget.removeAvatar!();
+      if (updated != null && mounted) setState(() => _profile = updated);
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(l10n.actionFailed('$e'))));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
 
   @override
   void initState() {
@@ -371,7 +427,37 @@ class _ProfileCardState extends State<_ProfileCard> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          LilyAvatar(seed: widget.account.username, label: shown, size: 60),
+          InkWell(
+            borderRadius: BorderRadius.circular(20),
+            onTap: widget.changeAvatar == null || _busy ? null : _avatarMenu,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                UserAvatar(
+                  userId: widget.account.userId,
+                  username: widget.account.username,
+                  name: shown,
+                  avatarVersion: profile?.avatarVersion ?? 0,
+                  size: 60,
+                ),
+                if (widget.changeAvatar != null)
+                  Positioned(
+                    right: -4,
+                    bottom: -4,
+                    child: CircleAvatar(
+                      radius: 12,
+                      backgroundColor: pond.accent,
+                      child: _busy
+                          ? SizedBox.square(
+                              dimension: 12,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: pond.onAccent),
+                            )
+                          : Icon(Icons.photo_camera_rounded, size: 13, color: pond.onAccent),
+                    ),
+                  ),
+              ],
+            ),
+          ),
           const SizedBox(width: 14),
           Expanded(
             child: Column(
@@ -398,6 +484,63 @@ class _ProfileCardState extends State<_ProfileCard> {
               icon: const Icon(Icons.edit_outlined),
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// Who sees what of the user.
+class _PrivacySection extends StatefulWidget {
+  const _PrivacySection({required this.load, required this.setLastSeenVisible});
+
+  final Future<UserProfile> Function() load;
+  final Future<UserProfile> Function(bool visible) setLastSeenVisible;
+
+  @override
+  State<_PrivacySection> createState() => _PrivacySectionState();
+}
+
+class _PrivacySectionState extends State<_PrivacySection> {
+  bool? _visible;
+  var _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.load().then((p) {
+      if (mounted) setState(() => _visible = p.lastSeenVisible ?? true);
+    }).catchError((Object _) {});
+  }
+
+  Future<void> _set(bool visible) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final l10n = AppLocalizations.of(context);
+    setState(() {
+      _busy = true;
+      _visible = visible;
+    });
+    try {
+      final saved = await widget.setLastSeenVisible(visible);
+      if (mounted) setState(() => _visible = saved.lastSeenVisible ?? visible);
+    } catch (e) {
+      if (mounted) setState(() => _visible = !visible);
+      messenger.showSnackBar(SnackBar(content: Text(l10n.actionFailed('$e'))));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    return _Pad(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: SwitchListTile(
+        secondary: const Icon(Icons.visibility_outlined),
+        title: Text(l10n.lastSeenVisible),
+        subtitle: Text(l10n.lastSeenVisibleHint),
+        value: _visible ?? true,
+        onChanged: _visible == null || _busy ? null : _set,
       ),
     );
   }
@@ -680,11 +823,13 @@ class _SessionTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
     return ListTile(
-      leading: Icon(
-        session.isCurrent ? Icons.smartphone_rounded : Icons.devices_other_rounded,
-      ),
+      leading: Icon(switch (session.deviceName) {
+        'Android device' || 'iPhone' => Icons.smartphone_rounded,
+        'Windows PC' || 'Mac' || 'Linux PC' => Icons.computer_rounded,
+        _ => Icons.devices_other_rounded,
+      }),
       title: Text(
-        session.userAgent.isEmpty ? l10n.unknownDevice : session.userAgent,
+        session.label.isEmpty ? l10n.unknownDevice : session.label,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),

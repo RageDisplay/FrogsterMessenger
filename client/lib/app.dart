@@ -5,12 +5,10 @@ import 'dart:async';
 
 import 'dart:io';
 
-import 'package:image_picker/image_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
-import 'crypto/attachment.dart';
 import 'crypto/crypto_engine.dart';
 import 'crypto/secure_key_storage.dart';
 import 'crypto/state_sealer.dart';
@@ -26,11 +24,14 @@ import 'data/remote/file_client.dart';
 import 'data/remote/server_config.dart';
 import 'data/remote/ws_client.dart';
 import 'data/repositories/attachment_repository.dart';
+import 'data/repositories/avatar_store.dart';
 import 'data/repositories/device_resolver.dart';
 import 'data/repositories/group_cipher.dart';
 import 'data/repositories/key_maintenance.dart';
 import 'data/repositories/message_repository.dart';
+import 'data/repositories/presence_tracker.dart';
 import 'features/auth/view/login_screen.dart';
+import 'features/chat/attachments.dart';
 import 'features/chat/bloc/chat_bloc.dart';
 import 'features/chat/view/chat_screen.dart';
 import 'features/chat_list/view/chat_list_screen.dart';
@@ -43,6 +44,7 @@ import 'l10n/app_localizations.dart';
 import 'ui/adaptive/adaptive_shell.dart';
 import 'ui/desktop/desktop_shell.dart';
 import 'ui/theme/app_theme.dart';
+import 'ui/widgets/avatars.dart';
 import 'ui/widgets/brand_mark.dart';
 
 /// Server offered on the sign-in screen of a fresh install. Overridable at
@@ -69,6 +71,10 @@ class FrogsterApp extends StatefulWidget {
 class _FrogsterAppState extends State<FrogsterApp> {
   final _preferences = AppPreferences();
 
+  /// Pictures and presence of the signed-in session, for every screen --
+  /// those pushed on top of the root too, hence above the navigator.
+  final _session = ValueNotifier<_SessionScope?>(null);
+
   @override
   void initState() {
     super.initState();
@@ -78,6 +84,7 @@ class _FrogsterAppState extends State<FrogsterApp> {
   @override
   void dispose() {
     _preferences.dispose();
+    _session.dispose();
     super.dispose();
   }
 
@@ -111,19 +118,37 @@ class _FrogsterAppState extends State<FrogsterApp> {
               systemNavigationBarIconBrightness: icons,
               systemNavigationBarDividerColor: Colors.transparent,
             ),
-            child: child!,
+            child: ValueListenableBuilder<_SessionScope?>(
+              valueListenable: _session,
+              builder: (context, session, _) => AvatarScope(
+                avatars: session?.avatars,
+                presence: session?.presence,
+                selfUserId: session?.selfUserId,
+                child: child!,
+              ),
+            ),
           );
         },
-        home: _AppRoot(preferences: _preferences),
+        home: _AppRoot(preferences: _preferences, session: _session),
       ),
     );
   }
 }
 
+/// What [AvatarScope] hands down for one signed-in session.
+class _SessionScope {
+  const _SessionScope({required this.avatars, required this.presence, required this.selfUserId});
+
+  final AvatarStore avatars;
+  final PresenceTracker presence;
+  final String selfUserId;
+}
+
 class _AppRoot extends StatefulWidget {
-  const _AppRoot({required this.preferences});
+  const _AppRoot({required this.preferences, required this.session});
 
   final AppPreferences preferences;
+  final ValueNotifier<_SessionScope?> session;
 
   @override
   State<_AppRoot> createState() => _AppRootState();
@@ -174,6 +199,8 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
   DeviceResolver? _resolver;
   MessageRepository? _repository;
   AttachmentRepository? _attachments;
+  AvatarStore? _avatars;
+  PresenceTracker? _presence;
   KeyMaintenance? _keyMaintenance;
 
   Account? _account;
@@ -466,12 +493,33 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
     maintenance.start();
 
     final chats = await _dao!.chats();
+    final blobCache = await AppDatabase.attachmentCacheDirectory();
+    final avatarCache = Directory('${(await AppDatabase.dataDirectory()).path}/avatars');
+    final api = connection.api;
+    final avatars = AvatarStore(
+      fetch: (owner, id) => owner == AvatarOwner.user ? api.userAvatar(id) : api.chatAvatar(id),
+      cacheDir: avatarCache,
+    );
+    await _presence?.dispose();
+    final presence = PresenceTracker(
+      ws: connection.ws,
+      api: api,
+      contacts: () async => [
+        for (final chat in await _dao!.chats())
+          for (final m in chat.members)
+            if (m.userId != account.userId) m.userId,
+      ],
+    );
+    presence.setActive(_lifecycle == AppLifecycleState.resumed);
     if (!mounted) return;
+    _avatars = avatars;
+    _presence = presence;
+    widget.session.value = _SessionScope(avatars: avatars, presence: presence, selfUserId: account.userId);
     setState(() {
       _account = account;
       _resolver = resolver;
       _repository = repository;
-      _attachments = AttachmentRepository(connection.files);
+      _attachments = AttachmentRepository(connection.files, cacheDir: blobCache);
       _keyMaintenance = maintenance;
       _chats = chats;
     });
@@ -515,7 +563,14 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
     if (forget) {
       await _keys.wipeAll();
       await _database?.wipe();
+      // Unreadable without the keys just erased, but no reason to keep it.
+      await _attachments?.clear();
+      await _avatars?.clear();
     }
+    widget.session.value = null;
+    await _presence?.dispose();
+    _presence = null;
+    _avatars = null;
     await _repository?.dispose();
     await _chatSub?.cancel();
     _chatSub = null;
@@ -565,12 +620,13 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
         onNewGroup: () => navigator.push(MaterialPageRoute<void>(
           builder: (_) => NewGroupScreen(
             search: _api.searchUsers,
-            onCreate: (title, members, mode) async {
+            onCreate: (title, members, mode, hideHistory) async {
               final remote = await _api.createChat(
                 type: 'group',
                 mode: mode,
                 members: [for (final m in members) m.username],
                 title: title,
+                hideHistory: hideHistory,
               );
               var chat = await _repository!.adoptChat(remote);
               if (chat.isSecret) {
@@ -665,6 +721,7 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
       builder: (_) => SearchScreen(
         chats: _chats,
         searchMessages: (query) => _dao!.search(query),
+        searchServer: _repository?.searchServer,
         onOpenChat: (chat) {
           navigator.pop();
           setState(() => _selected = chat);
@@ -744,6 +801,24 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
         },
         onRemove: (member) async =>
             repository.adoptChat(await _api.removeMember(chat.id, member.userId)),
+        onChangeAvatar: chat.isSecret
+            ? null
+            : () async {
+                final picture = await _pickAvatar();
+                if (picture == null) return null;
+                final version = await _api.setChatAvatar(chat.id, picture);
+                await _avatars?.put(AvatarOwner.chat, chat.id, version, picture);
+                return repository.adoptChat(await _api.getChat(chat.id));
+              },
+        onRemoveAvatar: chat.isSecret
+            ? null
+            : () async {
+                await _api.clearChatAvatar(chat.id);
+                return repository.adoptChat(await _api.getChat(chat.id));
+              },
+        onSetHideHistory: chat.isSecret
+            ? null
+            : (hide) async => repository.adoptChat(await _api.setHideHistory(chat.id, hide)),
         onLeave: () async {
           try {
             await _api.leaveChat(chat.id);
@@ -784,6 +859,23 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
           appVersion: appVersion,
           loadProfile: _api.me,
           onSaveProfile: (name, bio) => _api.updateMe(displayName: name, bio: bio),
+          onChangeAvatar: () async {
+            final picture = await _pickAvatar();
+            if (picture == null) return null;
+            final version = await _api.setMyAvatar(picture);
+            await _avatars?.put(AvatarOwner.user, account.userId, version, picture);
+            return _api.me();
+          },
+          onRemoveAvatar: () async {
+            await _api.clearMyAvatar();
+            return _api.me();
+          },
+          onSetLastSeenVisible: (visible) async {
+            final me = await _api.updateMe(lastSeenVisible: visible);
+            // What we see of others changes too.
+            unawaited(_presence?.refresh());
+            return me;
+          },
           onChangePassword: (current, next) =>
               _api.changePassword(currentPassword: current, newPassword: next),
           onDeleteAccount: (password) async {
@@ -799,93 +891,53 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
     );
   }
 
-  /// Opens the platform picker.
-  ///
-  /// Images only, for now. `file_picker` would cover arbitrary files, but
-  /// version 11 has not migrated to Flutter's built-in Kotlin and fails to
-  /// compile on Android under Flutter 3.44; the fix exists only in a 12.0.0
-  /// beta. `image_picker` is maintained by the Flutter team and builds
-  /// cleanly. The picker is injected into ChatScreen, so swapping it later
-  /// touches this method alone.
-  Future<PickedAttachment?> _pickFile() async {
-    final picked = await ImagePicker().pickImage(source: ImageSource.gallery);
-    if (picked == null) return null;
-
-    final bytes = await picked.readAsBytes();
-
-    if (bytes.length > maxAttachmentBytes) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(AppLocalizations.of(context).filesTooLarge)),
-        );
-      }
+  /// Lets the user pick a photo and makes an avatar of it: the centre
+  /// square, small. Null when they changed their mind.
+  Future<Uint8List?> _pickAvatar() async {
+    final l10n = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final picked = await const AttachmentPicker().pick(AttachSource.gallery);
+    final photo = picked.where((p) => p.isImage).firstOrNull;
+    if (photo == null) return null;
+    try {
+      return await prepareAvatar(photo.bytes);
+    } on FormatException {
+      messenger.showSnackBar(SnackBar(content: Text(l10n.avatarFailed)));
       return null;
     }
-
-    return PickedAttachment(
-      bytes: bytes,
-      mimeType: picked.mimeType ?? _mimeTypeFor(_extensionOf(picked.name)),
-      fileName: picked.name,
-    );
   }
 
-  /// The extension of a file name, without the dot.
-  static String? _extensionOf(String name) {
-    final dot = name.lastIndexOf('.');
-    return dot == -1 ? null : name.substring(dot + 1);
-  }
+  /// Opens a received file in the program the system has for it.
+  Future<void> _openAttachment(AttachmentPayload attachment, Uint8List bytes) =>
+      _handOver(attachment, bytes, open: true);
 
-  /// Writes decrypted bytes to a temporary file so the platform can open them.
-  ///
-  /// The plaintext only touches disk here, in the app's own cache, and only
-  /// because opening a file requires a path. It is deleted with the cache.
-  Future<void> _openAttachment(
+  /// Asks where to keep a received file and writes it there.
+  Future<void> _saveAttachment(AttachmentPayload attachment, Uint8List bytes) =>
+      _handOver(attachment, bytes, open: false);
+
+  Future<void> _handOver(
     AttachmentPayload attachment,
-    Uint8List bytes,
-  ) async {
+    Uint8List bytes, {
+    required bool open,
+  }) async {
+    final l10n = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final name = attachment.fileName ?? l10n.attachmentFile;
+    const saver = AttachmentSaver();
     try {
-      // Directory.systemTemp rather than path_provider: that package pulls in
-      // path_provider_foundation, whose objective_c dependency fails the
-      // Windows release build. dart:io covers this need on every platform.
-      final dir = await Directory.systemTemp.createTemp('frogster');
-      final name = attachment.fileName ?? 'attachment';
-      final file = File('${dir.path}/$name');
-      await file.writeAsBytes(bytes);
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(AppLocalizations.of(context).savedTo(file.path)),
-          ),
-        );
+      final outcome = open
+          ? await saver.open(name, bytes, attachment.mimeType)
+          : await saver.save(name, bytes, attachment.mimeType);
+      if (outcome == SaveOutcome.saved) {
+        final program = open && AttachmentSaver.isExecutable(AttachmentSaver.safeFileName(name));
+        messenger.showSnackBar(SnackBar(
+          content: Text(program ? l10n.fileOpenedAsSave : l10n.fileSaved),
+        ));
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(AppLocalizations.of(context).couldNotOpenFile('$e')),
-          ),
-        );
-      }
+      messenger.showSnackBar(SnackBar(content: Text(l10n.couldNotOpenFile('$e'))));
     }
   }
-
-  /// Maps an extension to a MIME type.
-  ///
-  /// The real type stays inside the encrypted payload; the upload always
-  /// declares a generic hint, so this never reaches the server.
-  static String _mimeTypeFor(String? extension) => switch (extension?.toLowerCase()) {
-        'jpg' || 'jpeg' => 'image/jpeg',
-        'png' => 'image/png',
-        'gif' => 'image/gif',
-        'webp' => 'image/webp',
-        'pdf' => 'application/pdf',
-        'mp4' => 'video/mp4',
-        'mp3' => 'audio/mpeg',
-        'txt' => 'text/plain',
-        _ => 'application/octet-stream',
-      };
-
   String _deviceName() {
     // Enough to tell devices apart on the sessions screen without shipping a
     // detailed fingerprint of the user's hardware to the server.
@@ -953,7 +1005,11 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
   /// Keyed by chat id so switching conversations creates a fresh bloc rather
   /// than reusing one still holding the previous chat's messages.
   @override
-  void didChangeAppLifecycleState(AppLifecycleState state) => _lifecycle = state;
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _lifecycle = state;
+    // In the background we still get messages, but are not "online".
+    _presence?.setActive(state == AppLifecycleState.resumed);
+  }
 
   @override
   void didChangeDependencies() {
@@ -1024,10 +1080,14 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
         onShowSafetyNumber: () => _showSafetyNumber(chat),
         onOpenInfo: () => _openGroupInfo(chat),
         onPickForwardTarget: _pickForwardTarget,
-        onPickAttachment: _pickFile,
-        onDownloadAttachment: (attachment) =>
-            _attachments!.download(attachment),
+        onPickAttachment: const AttachmentPicker().pick,
+        onDownloadAttachment: (attachment, onProgress) => _attachments!.download(
+          attachment,
+          onProgress: (p) => onProgress(p.fraction),
+        ),
+        cachedAttachment: (attachment) => _attachments?.cached(attachment.blobId),
         onOpenAttachment: _openAttachment,
+        onSaveAttachment: _saveAttachment,
       ),
     );
   }

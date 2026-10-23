@@ -130,12 +130,37 @@ void main() {
     testWidgets('falls back to a type label without a file name',
         (tester) async {
       await tester.pumpWidget(host(AttachmentView(
-        attachment: payload(mimeType: 'image/png', fileName: null),
+        attachment: payload(mimeType: 'video/mp4', fileName: null),
         state: AttachmentState.idle,
         onDownload: () {},
       )));
 
-      expect(find.text('Photo'), findsOneWidget);
+      expect(find.text('Video'), findsOneWidget);
+    });
+
+    // The bubble has the photo's shape before its pixels arrive, so the
+    // conversation does not jump as photos load.
+    testWidgets('a photo keeps its proportions while it loads', (tester) async {
+      await tester.pumpWidget(host(Center(child: AttachmentView(
+        attachment: const AttachmentPayload(
+          blobId: 'b', key: 'k', digest: 'd', size: 1, mimeType: 'image/jpeg', width: 1000, height: 500,
+        ),
+        state: AttachmentState.downloading,
+        onDownload: () {},
+      ))));
+      final size = tester.getSize(find.byType(AttachmentView));
+      expect(size.width / size.height, closeTo(2, 0.01));
+    });
+
+    testWidgets('a file being sent shows how far it has gone', (tester) async {
+      await tester.pumpWidget(host(AttachmentView(
+        attachment: AttachmentPayload.uploading(messageId: 'm1', size: 2048, mimeType: 'application/pdf', fileName: 'report.pdf'),
+        state: AttachmentState.idle,
+        uploadProgress: 0.42,
+        onDownload: () => fail('nothing to download yet'),
+      )));
+      expect(find.text('42% · 2 KB'), findsOneWidget);
+      await tester.tap(find.text('report.pdf'));
     });
 
     testWidgets('formats sizes readably', (tester) async {

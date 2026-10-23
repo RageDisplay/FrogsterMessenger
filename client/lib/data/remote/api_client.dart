@@ -75,6 +75,8 @@ class RemoteChat {
     required this.unread,
     required this.members,
     this.last,
+    this.avatarVersion = 0,
+    this.hideHistory = false,
   });
 
   final String id;
@@ -93,6 +95,9 @@ class RemoteChat {
 
   /// A cloud chat's newest message.
   final RemoteMessage? last;
+
+  final int avatarVersion;
+  final bool hideHistory;
 
   bool get isGroup => type == 'group';
 
@@ -113,6 +118,8 @@ class RemoteChat {
         last: json['last'] == null
             ? null
             : RemoteMessage.fromJson(json['last'] as Map<String, dynamic>),
+        avatarVersion: json['avatar_version'] as int? ?? 0,
+        hideHistory: json['hide_history'] as bool? ?? false,
       );
 
   /// This chat as the signed-in user sees it, keeping what only this device
@@ -136,6 +143,8 @@ class RemoteChat {
       role: role,
       peerReadSeq: peerReadSeq,
       syncedSeq: local?.syncedSeq ?? 0,
+      avatarVersion: avatarVersion,
+      hideHistory: hideHistory,
     );
   }
 }
@@ -420,6 +429,7 @@ class ApiClient {
     String? peer,
     List<String>? members,
     String? title,
+    bool hideHistory = false,
   }) async {
     final json = await _post('/v1/chats', {
       'type': type,
@@ -427,6 +437,7 @@ class ApiClient {
       'peer': ?peer,
       'members': ?members,
       if (mode == ChatMode.cloud && title != null) 'title': title,
+      if (mode == ChatMode.cloud && hideHistory) 'hide_history': true,
     });
     return RemoteChat.fromJson(json);
   }
@@ -466,6 +477,11 @@ class ApiClient {
       RemoteChat.fromJson(
           await _send('PATCH', '/v1/chats/$chatId', {'title': title}));
 
+  /// Whether members added to a cloud group from now on see its past.
+  Future<RemoteChat> setHideHistory(String chatId, bool hide) async =>
+      RemoteChat.fromJson(
+          await _send('PATCH', '/v1/chats/$chatId', {'hide_history': hide}));
+
   Future<RemoteChat> addMembers(String chatId, List<String> usernames) async =>
       RemoteChat.fromJson(
           await _post('/v1/chats/$chatId/members', {'members': usernames}));
@@ -497,11 +513,55 @@ class ApiClient {
   Future<void> deleteAccount(String password) =>
       _send('DELETE', '/v1/me', {'password': password});
 
-  Future<UserProfile> updateMe({String? displayName, String? bio}) async =>
+  Future<UserProfile> updateMe({String? displayName, String? bio, bool? lastSeenVisible}) async =>
       UserProfile.fromJson(await _send('PATCH', '/v1/me', {
         'display_name': ?displayName,
         'bio': ?bio,
+        'last_seen_visible': ?lastSeenVisible,
       }));
+
+  /// Replaces the signed-in user's avatar; returns its new version.
+  Future<int> setMyAvatar(Uint8List image) async =>
+      (jsonDecode(utf8.decode(await _bytes('PUT', '/v1/me/avatar', image) ?? const []))
+              as Map<String, dynamic>)['avatar_version'] as int;
+
+  Future<void> clearMyAvatar() => _delete('/v1/me/avatar');
+
+  /// Someone's avatar, or null when they have none.
+  Future<Uint8List?> userAvatar(String userId) => _bytes('GET', '/v1/users/$userId/avatar', null);
+
+  Future<int> setChatAvatar(String chatId, Uint8List image) async =>
+      (jsonDecode(utf8.decode(await _bytes('PUT', '/v1/chats/$chatId/avatar', image) ?? const []))
+              as Map<String, dynamic>)['avatar_version'] as int;
+
+  Future<void> clearChatAvatar(String chatId) => _delete('/v1/chats/$chatId/avatar');
+
+  /// A group's avatar, or null when it has none.
+  Future<Uint8List?> chatAvatar(String chatId) => _bytes('GET', '/v1/chats/$chatId/avatar', null);
+
+  /// Who of [userIds] is online, as the server lets us see it. People we
+  /// share no chat with are left out.
+  Future<Map<String, Presence>> presence(List<String> userIds) async {
+    if (userIds.isEmpty) return const {};
+    final json = await _get('/v1/presence?users=${userIds.map(Uri.encodeQueryComponent).join(',')}');
+    return {
+      for (final raw in json['presence'] as List<dynamic>)
+        (raw as Map<String, dynamic>)['user_id'] as String: Presence.fromJson(raw),
+    };
+  }
+
+  /// Cloud messages containing [query], from the whole history on the
+  /// server, newest first.
+  Future<List<({String chatId, RemoteMessage message})>> searchMessages(String query) async {
+    final json = await _get('/v1/search?q=${Uri.encodeQueryComponent(query)}');
+    return [
+      for (final raw in json['results'] as List<dynamic>)
+        (
+          chatId: (raw as Map<String, dynamic>)['chat_id'] as String,
+          message: RemoteMessage.fromJson(raw['message'] as Map<String, dynamic>),
+        ),
+    ];
+  }
 
   Future<List<DeviceSession>> sessions() async {
     final json = await _get('/v1/sessions');
@@ -511,6 +571,7 @@ class ApiClient {
         id: s['id'] as String,
         deviceId: s['device_id'] as String,
         userAgent: s['user_agent'] as String? ?? '',
+        deviceName: s['device_name'] as String? ?? '',
         lastUsedAt: DateTime.parse(s['last_used_at'] as String),
         isCurrent: s['current'] as bool? ?? false,
       );
@@ -532,6 +593,48 @@ class ApiClient {
     refreshToken = tokens.refreshToken;
     _accessExpiresAt = tokens.expiresAt;
     return tokens;
+  }
+
+  /// A request whose body, sent or received, is raw bytes. Null for a 404:
+  /// for an avatar, that means there is none.
+  Future<Uint8List?> _bytes(String method, String path, Uint8List? body) async {
+    final useRefresh = refreshToken != null;
+    if (useRefresh) await validAccessToken();
+    try {
+      return await _bytesOnce(method, path, body);
+    } on ApiException catch (e) {
+      if (!useRefresh || !e.isUnauthorized) rethrow;
+      await refresh();
+      return _bytesOnce(method, path, body);
+    }
+  }
+
+  Future<Uint8List?> _bytesOnce(String method, String path, Uint8List? body) async {
+    final request = await _http.openUrl(method, Uri.parse('$baseUrl$path'));
+    if (accessToken != null) {
+      request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $accessToken');
+    }
+    if (body != null) {
+      request.headers.set(HttpHeaders.contentTypeHeader, 'application/octet-stream');
+      request.contentLength = body.length;
+      request.add(body);
+    }
+    final response = await request.close();
+    final bytes = BytesBuilder(copy: false);
+    await for (final chunk in response) {
+      bytes.add(chunk);
+    }
+    if (response.statusCode == HttpStatus.notFound && method == 'GET') return null;
+    if (response.statusCode >= 400) {
+      var message = utf8.decode(bytes.takeBytes(), allowMalformed: true);
+      try {
+        message = (jsonDecode(message) as Map<String, dynamic>)['error'] as String;
+      } catch (_) {
+        // Not JSON; keep the raw text.
+      }
+      throw ApiException(response.statusCode, message);
+    }
+    return bytes.takeBytes();
   }
 
   Future<Map<String, dynamic>> _get(String path) =>

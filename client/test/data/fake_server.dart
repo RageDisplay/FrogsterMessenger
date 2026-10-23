@@ -527,6 +527,37 @@ class FakeApi extends ApiClient {
         .toList();
     return rows;
   }
+
+  /// As the real server does it: cloud chats the user is in, past their
+  /// cleared mark, text matched without regard to case.
+  @override
+  Future<List<({String chatId, RemoteMessage message})>> searchMessages(String query) async {
+    final needle = query.toLowerCase();
+    final out = <({String chatId, RemoteMessage message})>[];
+    for (final chat in _server.chats.values) {
+      if (chat.mode != ChatMode.cloud || !chat.roles.containsKey(_me)) continue;
+      final floor = chat.clearedSeq[_me] ?? 0;
+      for (final row in chat.rows.reversed) {
+        if (row.kind.isNotEmpty || row.deleted || row.seq <= floor || row.payload == null) continue;
+        final body = (jsonDecode(utf8.decode(row.payload!)) as Map<String, dynamic>)['body'] as String? ?? '';
+        if (body.toLowerCase().contains(needle)) out.add((chatId: chat.id, message: row));
+      }
+    }
+    return out;
+  }
+
+  /// Statuses a test sets, for the people asked about.
+  Map<String, Presence> presenceAnswers = {};
+  final presenceAsked = <List<String>>[];
+
+  @override
+  Future<Map<String, Presence>> presence(List<String> userIds) async {
+    presenceAsked.add(userIds);
+    return {
+      for (final id in userIds)
+        if (presenceAnswers[id] != null) id: presenceAnswers[id]!,
+    };
+  }
 }
 
 /// Decoded bodies, for comparing against plaintext.

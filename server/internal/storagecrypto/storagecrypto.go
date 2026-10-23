@@ -43,6 +43,7 @@ const version byte = 1
 const (
 	PurposeMessage = "msg"
 	PurposeTitle   = "title"
+	PurposeAvatar  = "avatar"
 )
 
 // ErrOpen is returned when a value fails to authenticate: it was tampered

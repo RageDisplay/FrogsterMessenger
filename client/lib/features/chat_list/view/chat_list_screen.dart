@@ -11,7 +11,7 @@ import '../../../ui/format.dart';
 import '../../../ui/theme/app_theme.dart';
 import '../../../ui/theme/pond_colors.dart';
 import '../../../ui/widgets/brand_mark.dart';
-import '../../../ui/widgets/lily_avatar.dart';
+import '../../../ui/widgets/avatars.dart';
 import '../../../ui/widgets/pond_nav_bar.dart';
 
 /// Which conversations the list shows.
@@ -445,6 +445,7 @@ class _ChatRow extends StatelessWidget {
     final preview = switch (chat.lastMessagePreview) {
       PreviewTokens.photo => l10n.previewPhoto,
       PreviewTokens.file => l10n.previewFile,
+      PreviewTokens.voice => l10n.previewVoice,
       final text => text ?? '',
     };
 
@@ -458,12 +459,7 @@ class _ChatRow extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           child: Row(
             children: [
-              LilyAvatar(
-                seed: chat.peerUsername ?? chat.id,
-                label: chat.displayName,
-                icon: chat.isGroup ? Icons.groups_rounded : null,
-                secret: chat.isSecret,
-              ),
+              ChatAvatar(chat: chat),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(

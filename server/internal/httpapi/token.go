@@ -73,6 +73,11 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error", s.log)
 		return
 	}
+	if ua := truncate(r.UserAgent(), 256); ua != "" {
+		if err := s.store.NoteSessionClient(r.Context(), sess.ID, ua); err != nil {
+			s.log.Warn("note session client", "err", err)
+		}
+	}
 
 	writeJSON(w, http.StatusOK, tokenResponse{
 		AccessToken:  access,

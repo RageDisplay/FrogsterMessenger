@@ -26,6 +26,12 @@ const String caCertificatePath = '/.well-known/frogster-ca.crt';
 /// can match with a different certificate.
 const int minFingerprintHexLength = 32;
 
+/// What the app calls itself to the server, shown on the active sessions
+/// screen: `Frogster/1.0.1 (windows)`. Dart's default names only the SDK.
+final String clientUserAgent =
+    'Frogster/${const String.fromEnvironment('FROGSTER_VERSION', defaultValue: '1.0.0')} '
+    '(${Platform.operatingSystem})';
+
 class ServerConfig {
   ServerConfig({required this.baseUri, this.caCertificatePem})
       : assert(baseUri.scheme == 'https' || baseUri.scheme == 'http');
@@ -68,7 +74,8 @@ class ServerConfig {
   }
 
   HttpClient httpClient() => HttpClient(context: securityContext())
-    ..connectionTimeout = const Duration(seconds: 15);
+    ..connectionTimeout = const Duration(seconds: 15)
+    ..userAgent = clientUserAgent;
 
   Map<String, dynamic> toJson() => {
         'base': baseUrl,

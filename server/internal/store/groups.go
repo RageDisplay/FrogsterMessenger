@@ -40,8 +40,23 @@ func (s *Store) AddMember(ctx context.Context, chatID, userID uuid.UUID) (uint64
 			JoinedAt: time.Now(),
 		}
 		// Re-joining clears any previous departure.
+		changes := map[string]any{"left_at": nil, "role": models.RoleMember}
+		if chat.HideHistory && chat.IsCloud() {
+			// The newcomer's history starts now: the same mark "clear
+			// history" uses, so the list, sync and unread counts all agree.
+			// Under the chat lock, so no message can slip in between.
+			var last int64
+			if err := tx.Raw(`SELECT COALESCE(MAX(seq), 0) FROM messages WHERE chat_id = ?`, chatID).
+				Scan(&last).Error; err != nil {
+				return fmt.Errorf("history start: %w", err)
+			}
+			// Not last_read_seq: that would turn the old messages "read"
+			// for their senders, by someone who never saw them. Unread
+			// counts start at cleared_seq anyway.
+			changes["cleared_seq"] = last
+		}
 		if err := tx.Where("chat_id = ? AND user_id = ?", chatID, userID).
-			Assign(map[string]any{"left_at": nil, "role": models.RoleMember}).
+			Assign(changes).
 			FirstOrCreate(&member).Error; err != nil {
 			return fmt.Errorf("add member: %w", err)
 		}

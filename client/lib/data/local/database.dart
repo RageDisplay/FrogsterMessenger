@@ -24,7 +24,7 @@ class AppDatabase {
 
   final Database db;
 
-  static const int _schemaVersion = 5;
+  static const int _schemaVersion = 6;
 
   /// Opens the database, initialising the desktop FFI backend when needed.
   ///
@@ -78,9 +78,13 @@ class AppDatabase {
   /// same install can end up with several databases, and deleting "the"
   /// database does not necessarily remove the one in use. A fixed per-user
   /// location avoids that.
-  static Future<String> _defaultDatabasePath() async {
+  static Future<String> _defaultDatabasePath() async =>
+      '${(await dataDirectory()).path}/frogster.db';
+
+  /// The app's private data directory, which holds the database.
+  static Future<Directory> dataDirectory() async {
     if (Platform.isAndroid || Platform.isIOS) {
-      return '${await getDatabasesPath()}/frogster.db';
+      return Directory(await getDatabasesPath());
     }
 
     final home = Platform.environment['APPDATA'] ??
@@ -90,8 +94,12 @@ class AppDatabase {
 
     final dir = Directory('$home/Frogster');
     if (!dir.existsSync()) dir.createSync(recursive: true);
-    return '${dir.path}/frogster.db';
+    return dir;
   }
+
+  /// Where fetched attachments are kept, still encrypted.
+  static Future<Directory> attachmentCacheDirectory() async =>
+      Directory('${(await dataDirectory()).path}/blobs');
 
   /// Migrates an existing database forward.
   ///
@@ -119,6 +127,13 @@ class AppDatabase {
     }
     if (from < 4) await _addV4Columns(db);
     if (from < 5) await _addSearchColumn(db, backfill: true);
+    if (from < 6) await _addV6Columns(db);
+  }
+
+  /// A group's avatar version and whether it hides its past from newcomers.
+  static Future<void> _addV6Columns(Database db) async {
+    await db.execute('ALTER TABLE chats ADD COLUMN avatar_version INTEGER NOT NULL DEFAULT 0');
+    await db.execute('ALTER TABLE chats ADD COLUMN hide_history INTEGER NOT NULL DEFAULT 0');
   }
 
   /// Message text folded to lower case for search.
@@ -267,6 +282,7 @@ class AppDatabase {
     await _createV3Tables(db);
     await _addV4Columns(db);
     await _addSearchColumn(db, backfill: false);
+    await _addV6Columns(db);
   }
 
   Future<void> close() => db.close();

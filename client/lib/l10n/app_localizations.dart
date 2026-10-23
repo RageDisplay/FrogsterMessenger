@@ -1405,6 +1405,168 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Quit'**
   String get trayQuit;
+
+  /// No description provided for @previewVoice.
+  ///
+  /// In en, this message translates to:
+  /// **'Voice message'**
+  String get previewVoice;
+
+  /// No description provided for @saveFile.
+  ///
+  /// In en, this message translates to:
+  /// **'Save'**
+  String get saveFile;
+
+  /// No description provided for @attachGallery.
+  ///
+  /// In en, this message translates to:
+  /// **'Photo or video'**
+  String get attachGallery;
+
+  /// No description provided for @attachCamera.
+  ///
+  /// In en, this message translates to:
+  /// **'Camera'**
+  String get attachCamera;
+
+  /// No description provided for @attachFile.
+  ///
+  /// In en, this message translates to:
+  /// **'File'**
+  String get attachFile;
+
+  /// No description provided for @attachFileHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Any file, sent as it is'**
+  String get attachFileHint;
+
+  /// No description provided for @fileTooLargeNamed.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} is over 100 MB'**
+  String fileTooLargeNamed(String name);
+
+  /// No description provided for @fileSaved.
+  ///
+  /// In en, this message translates to:
+  /// **'Saved'**
+  String get fileSaved;
+
+  /// No description provided for @fileOpenedAsSave.
+  ///
+  /// In en, this message translates to:
+  /// **'Programs are saved, not opened: open it yourself if you trust the sender'**
+  String get fileOpenedAsSave;
+
+  /// No description provided for @presenceOnline.
+  ///
+  /// In en, this message translates to:
+  /// **'online'**
+  String get presenceOnline;
+
+  /// No description provided for @presenceLastSeen.
+  ///
+  /// In en, this message translates to:
+  /// **'last seen {when}'**
+  String presenceLastSeen(String when);
+
+  /// No description provided for @presenceRecently.
+  ///
+  /// In en, this message translates to:
+  /// **'last seen recently'**
+  String get presenceRecently;
+
+  /// No description provided for @presenceWeek.
+  ///
+  /// In en, this message translates to:
+  /// **'last seen within a week'**
+  String get presenceWeek;
+
+  /// No description provided for @presenceMonth.
+  ///
+  /// In en, this message translates to:
+  /// **'last seen within a month'**
+  String get presenceMonth;
+
+  /// No description provided for @presenceLongAgo.
+  ///
+  /// In en, this message translates to:
+  /// **'last seen a long time ago'**
+  String get presenceLongAgo;
+
+  /// No description provided for @lastSeenToday.
+  ///
+  /// In en, this message translates to:
+  /// **'at {time}'**
+  String lastSeenToday(String time);
+
+  /// No description provided for @lastSeenYesterday.
+  ///
+  /// In en, this message translates to:
+  /// **'yesterday at {time}'**
+  String lastSeenYesterday(String time);
+
+  /// No description provided for @lastSeenDate.
+  ///
+  /// In en, this message translates to:
+  /// **'{date} at {time}'**
+  String lastSeenDate(String date, String time);
+
+  /// No description provided for @hideHistoryTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Hide history from new members'**
+  String get hideHistoryTitle;
+
+  /// No description provided for @hideHistoryHint.
+  ///
+  /// In en, this message translates to:
+  /// **'People added from now on see only what is said after they join'**
+  String get hideHistoryHint;
+
+  /// No description provided for @avatarChoose.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose a photo'**
+  String get avatarChoose;
+
+  /// No description provided for @avatarRemove.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove photo'**
+  String get avatarRemove;
+
+  /// No description provided for @avatarFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not use this picture'**
+  String get avatarFailed;
+
+  /// No description provided for @privacy.
+  ///
+  /// In en, this message translates to:
+  /// **'Privacy'**
+  String get privacy;
+
+  /// No description provided for @lastSeenVisible.
+  ///
+  /// In en, this message translates to:
+  /// **'Show when I was online'**
+  String get lastSeenVisible;
+
+  /// No description provided for @lastSeenVisibleHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Off: others see \"recently\", and you see the same of them'**
+  String get lastSeenVisibleHint;
+
+  /// No description provided for @searchOnServer.
+  ///
+  /// In en, this message translates to:
+  /// **'Older messages from the server'**
+  String get searchOnServer;
 }
 
 class _AppLocalizationsDelegate

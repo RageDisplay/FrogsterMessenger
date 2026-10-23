@@ -364,5 +364,70 @@
   "notifyNewMessage": "New message",
   "notifyVoice": "Voice message",
   "trayOpen": "Open Frogster",
-  "trayQuit": "Quit"
+  "trayQuit": "Quit",
+  "previewVoice": "Voice message",
+  "saveFile": "Save",
+  "attachGallery": "Photo or video",
+  "attachCamera": "Camera",
+  "attachFile": "File",
+  "attachFileHint": "Any file, sent as it is",
+  "fileTooLargeNamed": "{name} is over 100 MB",
+  "@fileTooLargeNamed": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "fileSaved": "Saved",
+  "fileOpenedAsSave": "Programs are saved, not opened: open it yourself if you trust the sender",
+  "presenceOnline": "online",
+  "presenceLastSeen": "last seen {when}",
+  "@presenceLastSeen": {
+    "placeholders": {
+      "when": {
+        "type": "String"
+      }
+    }
+  },
+  "presenceRecently": "last seen recently",
+  "presenceWeek": "last seen within a week",
+  "presenceMonth": "last seen within a month",
+  "presenceLongAgo": "last seen a long time ago",
+  "lastSeenToday": "at {time}",
+  "@lastSeenToday": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "lastSeenYesterday": "yesterday at {time}",
+  "@lastSeenYesterday": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "lastSeenDate": "{date} at {time}",
+  "@lastSeenDate": {
+    "placeholders": {
+      "date": {
+        "type": "String"
+      },
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "hideHistoryTitle": "Hide history from new members",
+  "hideHistoryHint": "People added from now on see only what is said after they join",
+  "avatarChoose": "Choose a photo",
+  "avatarRemove": "Remove photo",
+  "avatarFailed": "Could not use this picture",
+  "privacy": "Privacy",
+  "lastSeenVisible": "Show when I was online",
+  "lastSeenVisibleHint": "Off: others see \"recently\", and you see the same of them",
+  "searchOnServer": "Older messages from the server"
 }

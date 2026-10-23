@@ -71,6 +71,14 @@ class MessageDao {
     );
   }
 
+  /// Fails the files whose upload the app was closed in the middle of: the
+  /// file is not kept, so they cannot be finished, only sent again.
+  Future<int> failInterruptedUploads() => _db.rawUpdate(
+    "UPDATE messages SET status = 'failed' "
+    "WHERE is_outgoing = 1 AND status = 'pending' AND attachment LIKE ?",
+    ['%"blob_id":"${AttachmentPayload.localBlobPrefix}%'],
+  );
+
   /// Turns our messages up to [seq] read. Never touches a failed or
   /// unacknowledged one: those have not reached anybody.
   Future<int> markOutgoingRead(String chatId, int seq) => _db.rawUpdate(
@@ -156,6 +164,8 @@ class MessageDao {
       'role': chat.role,
       'peer_read_seq': chat.peerReadSeq,
       'synced_seq': chat.syncedSeq,
+      'avatar_version': chat.avatarVersion,
+      'hide_history': chat.hideHistory ? 1 : 0,
     };
     final updated = await _db.update(
       'chats',
@@ -333,6 +343,8 @@ class MessageDao {
     muted: (r['muted'] as int? ?? 0) == 1,
     archived: (r['archived'] as int? ?? 0) == 1,
     hidden: (r['hidden'] as int? ?? 0) == 1,
+    avatarVersion: r['avatar_version'] as int? ?? 0,
+    hideHistory: (r['hide_history'] as int? ?? 0) == 1,
   );
 
   Map<String, Object?> _toRow(Message m) => {

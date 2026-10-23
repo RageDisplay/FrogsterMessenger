@@ -201,16 +201,18 @@ Uint8List _chunkAad(int index) =>
 Future<({Uint8List ciphertext, Uint8List digest, Uint8List key})>
     encryptAttachment(Uint8List plaintext) async {
   final encryptor = await AttachmentEncryptor.create();
-  final parts = <int>[];
+  // A byte builder, not a List<int>: the latter spends eight bytes per byte,
+  // which for a large file is the difference between working and not.
+  final parts = BytesBuilder(copy: false);
 
   for (var offset = 0; offset < plaintext.length; offset += attachmentChunkSize) {
     final end = (offset + attachmentChunkSize).clamp(0, plaintext.length);
-    parts.addAll(await encryptor.encryptChunk(
+    parts.add(await encryptor.encryptChunk(
       Uint8List.sublistView(plaintext, offset, end),
     ));
   }
 
-  final ciphertext = Uint8List.fromList(parts);
+  final ciphertext = parts.takeBytes();
   return (
     ciphertext: ciphertext,
     digest: await sha256(ciphertext),
@@ -227,14 +229,14 @@ Future<Uint8List> decryptAttachment({
   await verifyAttachmentDigest(ciphertext: ciphertext, expectedDigest: digest);
 
   final decryptor = AttachmentDecryptor(key);
-  final out = <int>[];
+  final out = BytesBuilder(copy: false);
   const encryptedChunk = attachmentChunkSize + attachmentChunkOverhead;
 
   for (var offset = 0; offset < ciphertext.length; offset += encryptedChunk) {
     final end = (offset + encryptedChunk).clamp(0, ciphertext.length);
-    out.addAll(await decryptor.decryptChunk(
+    out.add(await decryptor.decryptChunk(
       Uint8List.sublistView(ciphertext, offset, end),
     ));
   }
-  return Uint8List.fromList(out);
+  return out.takeBytes();
 }

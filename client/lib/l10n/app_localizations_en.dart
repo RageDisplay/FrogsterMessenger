@@ -737,4 +737,98 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get trayQuit => 'Quit';
+
+  @override
+  String get previewVoice => 'Voice message';
+
+  @override
+  String get saveFile => 'Save';
+
+  @override
+  String get attachGallery => 'Photo or video';
+
+  @override
+  String get attachCamera => 'Camera';
+
+  @override
+  String get attachFile => 'File';
+
+  @override
+  String get attachFileHint => 'Any file, sent as it is';
+
+  @override
+  String fileTooLargeNamed(String name) {
+    return '$name is over 100 MB';
+  }
+
+  @override
+  String get fileSaved => 'Saved';
+
+  @override
+  String get fileOpenedAsSave =>
+      'Programs are saved, not opened: open it yourself if you trust the sender';
+
+  @override
+  String get presenceOnline => 'online';
+
+  @override
+  String presenceLastSeen(String when) {
+    return 'last seen $when';
+  }
+
+  @override
+  String get presenceRecently => 'last seen recently';
+
+  @override
+  String get presenceWeek => 'last seen within a week';
+
+  @override
+  String get presenceMonth => 'last seen within a month';
+
+  @override
+  String get presenceLongAgo => 'last seen a long time ago';
+
+  @override
+  String lastSeenToday(String time) {
+    return 'at $time';
+  }
+
+  @override
+  String lastSeenYesterday(String time) {
+    return 'yesterday at $time';
+  }
+
+  @override
+  String lastSeenDate(String date, String time) {
+    return '$date at $time';
+  }
+
+  @override
+  String get hideHistoryTitle => 'Hide history from new members';
+
+  @override
+  String get hideHistoryHint =>
+      'People added from now on see only what is said after they join';
+
+  @override
+  String get avatarChoose => 'Choose a photo';
+
+  @override
+  String get avatarRemove => 'Remove photo';
+
+  @override
+  String get avatarFailed => 'Could not use this picture';
+
+  @override
+  String get privacy => 'Privacy';
+
+  @override
+  String get lastSeenVisible => 'Show when I was online';
+
+  @override
+  String get lastSeenVisibleHint =>
+      'Off: others see \"recently\", and you see the same of them';
+
+  @override
+  String get searchOnServer => 'Older messages from the server';
 }

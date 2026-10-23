@@ -15,6 +15,16 @@ type User struct {
 	DisplayName string    `gorm:"type:varchar(64)" json:"display_name"`
 	Bio         string    `gorm:"type:varchar(140);not null;default:''" json:"bio"`
 
+	// AvatarVersion is 0 without an avatar and grows with each new one.
+	AvatarVersion int `gorm:"not null;default:0" json:"avatar_version"`
+
+	// LastSeenAt is when the user's last device went offline.
+	LastSeenAt *time.Time `json:"-"`
+
+	// LastSeenVisible lets others see LastSeenAt and whether the user is
+	// online. Off, they see "recently" -- and so does the user, of them.
+	LastSeenVisible bool `gorm:"not null;default:true" json:"-"`
+
 	// PasswordHash is a bcrypt digest (60 chars). Never serialized to clients.
 	PasswordHash string `gorm:"type:varchar(72);not null" json:"-"`
 

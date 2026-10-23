@@ -741,4 +741,98 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get trayQuit => 'Выйти';
+
+  @override
+  String get previewVoice => 'Голосовое сообщение';
+
+  @override
+  String get saveFile => 'Сохранить';
+
+  @override
+  String get attachGallery => 'Фото или видео';
+
+  @override
+  String get attachCamera => 'Камера';
+
+  @override
+  String get attachFile => 'Файл';
+
+  @override
+  String get attachFileHint => 'Любой файл, без сжатия';
+
+  @override
+  String fileTooLargeNamed(String name) {
+    return '$name больше 100 МБ';
+  }
+
+  @override
+  String get fileSaved => 'Сохранено';
+
+  @override
+  String get fileOpenedAsSave =>
+      'Программы не открываются из чата — сохраните и откройте сами, если доверяете отправителю';
+
+  @override
+  String get presenceOnline => 'в сети';
+
+  @override
+  String presenceLastSeen(String when) {
+    return 'был(а) $when';
+  }
+
+  @override
+  String get presenceRecently => 'был(а) недавно';
+
+  @override
+  String get presenceWeek => 'был(а) на этой неделе';
+
+  @override
+  String get presenceMonth => 'был(а) в этом месяце';
+
+  @override
+  String get presenceLongAgo => 'был(а) давно';
+
+  @override
+  String lastSeenToday(String time) {
+    return 'в $time';
+  }
+
+  @override
+  String lastSeenYesterday(String time) {
+    return 'вчера в $time';
+  }
+
+  @override
+  String lastSeenDate(String date, String time) {
+    return '$date в $time';
+  }
+
+  @override
+  String get hideHistoryTitle => 'Скрывать историю от новых участников';
+
+  @override
+  String get hideHistoryHint =>
+      'Кого добавят теперь, увидят только сообщения после своего входа';
+
+  @override
+  String get avatarChoose => 'Выбрать фото';
+
+  @override
+  String get avatarRemove => 'Удалить фото';
+
+  @override
+  String get avatarFailed => 'Не получилось использовать эту картинку';
+
+  @override
+  String get privacy => 'Конфиденциальность';
+
+  @override
+  String get lastSeenVisible => 'Показывать, когда я был(а) в сети';
+
+  @override
+  String get lastSeenVisibleHint =>
+      'Если выключить — другие увидят «недавно», и вы у них тоже';
+
+  @override
+  String get searchOnServer => 'Старые сообщения с сервера';
 }

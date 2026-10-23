@@ -66,7 +66,10 @@ void main() {
 
     test('a photo or a voice message says what it is', () {
       const photo = AttachmentPayload(blobId: 'b', key: 'k', digest: 'd', size: 1, mimeType: 'image/png');
-      const voice = AttachmentPayload(blobId: 'b', key: 'k', digest: 'd', size: 1, mimeType: 'audio/mp4');
+      const voice = AttachmentPayload(blobId: 'b', key: 'k', digest: 'd', size: 1, mimeType: 'audio/mp4', voice: true);
+      // A song sent as a file is a file, not a voice message.
+      const song = AttachmentPayload(blobId: 'b', key: 'k', digest: 'd', size: 1, mimeType: 'audio/mpeg', fileName: 'song.mp3');
+      expect(notificationContent(message: _msg(body: '', attachment: song), chat: _chat, showPreview: true, texts: _texts).body, 'song.mp3');
       expect(notificationContent(message: _msg(body: '', attachment: photo), chat: _chat, showPreview: true, texts: _texts).body, 'Фото');
       expect(notificationContent(message: _msg(body: '', attachment: voice), chat: _chat, showPreview: true, texts: _texts).body, 'Голосовое сообщение');
     });

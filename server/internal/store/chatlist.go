@@ -41,11 +41,12 @@ type ChatSummary struct {
 
 // MemberInfo describes a current member of a chat.
 type MemberInfo struct {
-	UserID      uuid.UUID
-	Username    string
-	DisplayName string
-	Role        string
-	LastReadSeq int64
+	UserID        uuid.UUID
+	Username      string
+	DisplayName   string
+	Role          string
+	LastReadSeq   int64
+	AvatarVersion int
 }
 
 // summaryRow is what the chat-list query returns before members and the
@@ -165,7 +166,7 @@ func (s *Store) membersOf(ctx context.Context, chatIDs []uuid.UUID) (map[uuid.UU
 	}
 	var rows []row
 	err := s.db.WithContext(ctx).Raw(`
-		SELECT cm.chat_id, cm.user_id, u.username, u.display_name, cm.role, cm.last_read_seq
+		SELECT cm.chat_id, cm.user_id, u.username, u.display_name, cm.role, cm.last_read_seq, u.avatar_version
 		  FROM chat_members cm JOIN users u ON u.id = cm.user_id
 		 WHERE cm.chat_id IN ? AND cm.left_at IS NULL
 		 ORDER BY cm.joined_at ASC, u.username ASC`, chatIDs).Scan(&rows).Error
@@ -305,6 +306,13 @@ func (s *Store) SearchUsers(ctx context.Context, prefix string, exclude uuid.UUI
 		return nil, fmt.Errorf("search users: %w", err)
 	}
 	return users, nil
+}
+
+// SetHideHistory turns hiding a group's past from newcomers on or off. It
+// applies to members added from now on; nobody loses what they could see.
+func (s *Store) SetHideHistory(ctx context.Context, chatID uuid.UUID, hide bool) error {
+	return s.db.WithContext(ctx).Model(&models.Chat{}).Where("id = ?", chatID).
+		Updates(map[string]any{"hide_history": hide, "updated_at": time.Now()}).Error
 }
 
 // UpdateProfile changes a user's display name and bio.

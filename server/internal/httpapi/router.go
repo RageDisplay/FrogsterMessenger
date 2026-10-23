@@ -29,6 +29,13 @@ type DeviceNotifier interface {
 	NotifyChatUpdated(ctx context.Context, chatID uuid.UUID, epoch uint64, users []uuid.UUID)
 }
 
+// PresenceView answers who is online. Declared here, like DeviceNotifier,
+// so httpapi does not depend on the delivery package.
+type PresenceView interface {
+	Statuses(ctx context.Context, viewer uuid.UUID, users []uuid.UUID) ([]store.PresenceStatus, error)
+	VisibilityChanged(ctx context.Context, userID uuid.UUID)
+}
+
 // Server holds the dependencies shared by the HTTP handlers.
 type Server struct {
 	cfg      *config.Config
@@ -36,6 +43,7 @@ type Server struct {
 	tokens   *auth.Manager
 	limiter  ratelimit.Limiter
 	notifier DeviceNotifier
+	presence PresenceView
 	log      *slog.Logger
 
 	// wsHandler serves the WebSocket upgrade. Injected so that httpapi does
@@ -45,6 +53,9 @@ type Server struct {
 	// ready reports whether dependencies (database, Redis) are reachable.
 	ready func(ctx context.Context) error
 }
+
+// SetPresence installs the presence tracker behind GET /v1/presence.
+func (s *Server) SetPresence(p PresenceView) { s.presence = p }
 
 // SetReadinessCheck installs the dependency check behind /readyz.
 func (s *Server) SetReadinessCheck(check func(ctx context.Context) error) {
@@ -86,7 +97,7 @@ func (s *Server) Routes() http.Handler {
 	// authed applies authentication and the per-user budget. Endpoints with a
 	// stricter rule of their own add it on top.
 	authed := func(h http.HandlerFunc) http.Handler {
-		return requireAuth(ratelimit.Middleware(s.limiter, ratelimit.RuleAPI, byUser, s.log)(h))
+		return requireAuth(ratelimit.Middleware(s.limiter, ratelimit.RuleAPI, userBucket("api"), s.log)(h))
 	}
 
 	// Public endpoints.
@@ -107,7 +118,7 @@ func (s *Server) Routes() http.Handler {
 
 	// Authenticated endpoints.
 	mux.Handle("GET /v1/keys/{username}",
-		requireAuth(ratelimit.Middleware(s.limiter, ratelimit.RuleKeys, byUser, s.log)(
+		requireAuth(ratelimit.Middleware(s.limiter, ratelimit.RuleKeys, userBucket("keys"), s.log)(
 			http.HandlerFunc(s.handleGetKeys))))
 
 	// /v1/keys/count shadows a user literally named "count"; the /v1/me form
@@ -121,15 +132,33 @@ func (s *Server) Routes() http.Handler {
 	// Registered before /v1/users/{id}: the more specific pattern wins, so a
 	// user can never shadow the search endpoint.
 	mux.Handle("GET /v1/users/search",
-		requireAuth(ratelimit.Middleware(s.limiter, ratelimit.RuleSearch, byUser, s.log)(
+		requireAuth(ratelimit.Middleware(s.limiter, ratelimit.RuleSearch, userBucket("search"), s.log)(
 			http.HandlerFunc(s.handleSearchUsers))))
 	mux.Handle("GET /v1/users/{id}", authed(s.handleLookupUser))
 
 	mux.Handle("GET /v1/me", authed(s.handleGetMe))
 	mux.Handle("PATCH /v1/me", authed(s.handleUpdateMe))
 	mux.Handle("DELETE /v1/me",
-		requireAuth(ratelimit.Middleware(s.limiter, ratelimit.RulePassword, byUser, s.log)(
+		requireAuth(ratelimit.Middleware(s.limiter, ratelimit.RulePassword, userBucket("password"), s.log)(
 			http.HandlerFunc(s.handleDeleteMe))))
+
+	// Uploads have a budget of their own; fetching is ordinary API use.
+	avatarUpload := func(h http.HandlerFunc) http.Handler {
+		return requireAuth(ratelimit.Middleware(s.limiter, ratelimit.RuleAvatar, userBucket("avatar"), s.log)(h))
+	}
+	mux.Handle("PUT /v1/me/avatar", avatarUpload(s.handleSetMyAvatar))
+	mux.Handle("DELETE /v1/me/avatar", authed(s.handleClearMyAvatar))
+	mux.Handle("GET /v1/users/{id}/avatar", authed(s.handleUserAvatar))
+	mux.Handle("PUT /v1/chats/{id}/avatar", avatarUpload(s.handleSetChatAvatar))
+	mux.Handle("DELETE /v1/chats/{id}/avatar", authed(s.handleClearChatAvatar))
+	mux.Handle("GET /v1/chats/{id}/avatar", authed(s.handleChatAvatar))
+
+	mux.Handle("GET /v1/presence", authed(s.handlePresence))
+	// Opening sealed history is the most expensive thing a user can ask
+	// for, so it shares the search budget.
+	mux.Handle("GET /v1/search",
+		requireAuth(ratelimit.Middleware(s.limiter, ratelimit.RuleSearch, userBucket("search"), s.log)(
+			http.HandlerFunc(s.handleSearchMessages))))
 
 	mux.Handle("GET /v1/chats", authed(s.handleListChats))
 	mux.Handle("POST /v1/chats", authed(s.handleCreateChat))
@@ -146,7 +175,7 @@ func (s *Server) Routes() http.Handler {
 
 	mux.Handle("POST /v1/logout", authed(s.handleLogout))
 	mux.Handle("POST /v1/password",
-		requireAuth(ratelimit.Middleware(s.limiter, ratelimit.RulePassword, byUser, s.log)(
+		requireAuth(ratelimit.Middleware(s.limiter, ratelimit.RulePassword, userBucket("password"), s.log)(
 			http.HandlerFunc(s.handleChangePassword))))
 
 	// The WebSocket endpoint authenticates inside the handler, because the
@@ -164,13 +193,20 @@ func loginKey(r *http.Request) string {
 	return "login:" + ratelimit.ClientIP(r)
 }
 
-// byUser buckets by authenticated user.
-func byUser(r *http.Request) string {
-	claims, ok := auth.ClaimsFrom(r.Context())
-	if !ok {
-		return ""
+// userBucket buckets by authenticated user, one bucket per rule.
+//
+// The name keeps rules apart: a token bucket is shaped by the rule that
+// drains it, so two rules sharing one key would share one budget -- and the
+// generous general-API rule would keep refilling the five-an-hour password
+// bucket.
+func userBucket(name string) ratelimit.KeyFunc {
+	return func(r *http.Request) string {
+		claims, ok := auth.ClaimsFrom(r.Context())
+		if !ok {
+			return ""
+		}
+		return "user:" + name + ":" + claims.UserID.String()
 	}
-	return "user:" + claims.UserID.String()
 }
 
 // handleHealth is the liveness probe: the process is up and serving. It

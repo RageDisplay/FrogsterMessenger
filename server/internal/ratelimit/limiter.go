@@ -60,4 +60,7 @@ var (
 	// RuleSearch bounds user search: enough to type a name, too little to
 	// walk the whole directory.
 	RuleSearch = Rule{Burst: 30, Rate: 30, Period: time.Minute}
+
+	// RuleAvatar bounds avatar uploads: a few tries at a new picture.
+	RuleAvatar = Rule{Burst: 10, Rate: 10, Period: time.Hour}
 )

@@ -78,11 +78,24 @@ class TypingNotice {
   final String userId;
 }
 
+/// Uploads one file, reporting progress from 0 to 1, and returns the
+/// reference to send.
+typedef FileUpload = Future<AttachmentPayload> Function(void Function(double fraction) onProgress);
+
+/// A file being sent has gone [fraction] of the way up.
+class UploadProgress {
+  const UploadProgress(this.messageId, this.fraction);
+
+  final String messageId;
+  final double fraction;
+}
+
 /// Placeholders the chat list shows for messages without text, rendered in
 /// the user's language by the UI.
 class PreviewTokens {
   static const photo = '\u0000photo';
   static const file = '\u0000file';
+  static const voice = '\u0000voice';
 }
 
 class MessageRepository {
@@ -120,6 +133,10 @@ class MessageRepository {
 
     // A fresh connection replays what never got an answer, then catches up
     // on what happened while away.
+    // A new repository has no uploads running; any left pending were cut
+    // off when the app last closed.
+    unawaited(_dao.failInterruptedUploads());
+
     _connectionSub = _ws.connectionState.listen((state) {
       if (state == SocketState.connected) unawaited(_onConnected());
     });
@@ -229,14 +246,120 @@ class MessageRepository {
     return message;
   }
 
+  /// Sends a file with an optional caption.
+  ///
+  /// The message shows up at once with [AttachmentPayload.uploading] as its
+  /// attachment, and [uploadProgress] reports how far the file has gone. It
+  /// goes out only after the upload: the message must never point
+  /// recipients at a blob that does not exist yet.
+  ///
+  /// Returns once the message is stored; the upload carries on behind it.
+  Future<Message> sendFile({
+    required String chatId,
+    required String body,
+    required AttachmentPayload Function(String messageId) placeholder,
+    required FileUpload upload,
+    String? replyToId,
+  }) async {
+    final id = _newId();
+    final message = Message(
+      id: id,
+      chatId: chatId,
+      senderId: _account.userId,
+      senderDeviceId: _account.deviceId,
+      body: body,
+      sentAt: DateTime.now(),
+      isOutgoing: true,
+      status: MessageStatus.pending,
+      replyToId: replyToId,
+      attachment: placeholder(id),
+    );
+
+    await _dao.upsertMessage(message);
+    await _dao.setDraft(chatId, '');
+    await _dao.touchChat(chatId, previewOf(body, message.attachment), message.sentAt);
+    _messages.add(message);
+    _chatUpdates.add(chatId);
+
+    _uploads[id] = upload;
+    _queueUpload(message);
+    return message;
+  }
+
+  /// Files go up one at a time, in the order they were sent, so an album
+  /// arrives in order and one large file does not starve the others of
+  /// bandwidth.
+  Future<void> _uploadQueue = Future.value();
+
+  void _queueUpload(Message message) {
+    _uploadQueue = _uploadQueue.then((_) => _uploadAndSend(message)).catchError((_) {});
+  }
+
+  /// Completes once every file sent so far has gone up or failed.
+  Future<void> get uploadsSettled => _uploadQueue;
+
+  Future<void> _uploadAndSend(Message message) async {
+    // Deleted while it waited its turn.
+    if (await _dao.messageById(message.id) == null) return;
+    final upload = _uploads[message.id];
+    final placeholder = message.attachment;
+    if (upload == null || placeholder == null) {
+      await _markFailed(message);
+      return;
+    }
+    AttachmentPayload uploaded;
+    try {
+      uploaded = await upload((fraction) {
+        if (!_uploadProgress.isClosed) {
+          _uploadProgress.add(UploadProgress(message.id, fraction));
+        }
+      });
+    } catch (_) {
+      // Kept, so a retry can try the upload again without picking the file
+      // a second time.
+      await _markFailed(message);
+      return;
+    }
+    _uploads.remove(message.id);
+    // Deleted while it was uploading: nobody is waiting for it.
+    if (await _dao.messageById(message.id) == null) return;
+
+    final ready = message.copyWith(attachment: uploaded);
+    await _dao.upsertMessage(ready);
+    _messages.add(ready);
+    await _sendOrFail(ready, _payloadFor(ready));
+  }
+
+  Future<void> _markFailed(Message message) async {
+    await _dao.updateStatus(message.id, MessageStatus.failed);
+    _messages.add(message.copyWith(status: MessageStatus.failed));
+  }
+
+  /// Uploads waiting for their file to finish, or to be retried.
+  final _uploads = <String, FileUpload>{};
+
+  final _uploadProgress = StreamController<UploadProgress>.broadcast();
+
+  /// How far each file being sent from here has gone up.
+  Stream<UploadProgress> get uploadProgress => _uploadProgress.stream;
+
   /// Sends a message that failed again, under the same id: if the first
   /// attempt did reach the server after all, it recognises the duplicate.
   Future<void> retry(Message message) async {
     final pending = message.copyWith(status: MessageStatus.pending);
     await _dao.updateStatus(message.id, MessageStatus.pending);
     _messages.add(pending);
+    if (pending.attachment?.isUploading ?? false) {
+      _queueUpload(pending);
+      return;
+    }
     await _sendOrFail(pending, _payloadFor(pending));
   }
+
+  /// Whether retrying [message] can work: a file whose upload was cut short
+  /// by the app closing is gone with it.
+  bool canRetry(Message message) =>
+      !(message.attachment?.isUploading ?? false) || _uploads.containsKey(message.id);
 
   /// Changes the text of one of our messages, for everyone.
   Future<void> edit(Message message, String body) async {
@@ -262,6 +385,7 @@ class MessageRepository {
   /// Deletes a message for everyone: ours, or anyone's when we administer
   /// the group.
   Future<void> delete(Message message) async {
+    _uploads.remove(message.id);
     await _dao.deleteMessage(message.id);
     await _dao.refreshPreview(message.chatId, _previewOfMessage);
     _removed.add(message);
@@ -830,13 +954,18 @@ class MessageRepository {
   /// Stores a history row as it stands now: edited text, reactions, and
   /// nothing at all for a deleted message.
   Future<void> _storeHistoryRow(Chat chat, RemoteMessage row) async {
-    if (row.deleted || row.kind.isNotEmpty || row.payload == null) return;
-    final payload = _decodePayload(row.payload!);
-    if (payload == null) return;
     final existing = await _dao.messageById(row.id);
+    final message = _messageFromRow(chat, row, editedAt: existing?.editedAt);
+    if (message != null) await _dao.upsertMessage(message);
+  }
+
+  /// A history row as a message, or null for an event or a deleted one.
+  Message? _messageFromRow(Chat chat, RemoteMessage row, {DateTime? editedAt}) {
+    if (row.deleted || row.kind.isNotEmpty || row.payload == null) return null;
+    final payload = _decodePayload(row.payload!);
+    if (payload == null) return null;
     final own = row.senderId == _account.userId;
-    await _dao.upsertMessage(
-      Message(
+    return Message(
         id: row.id,
         chatId: chat.id,
         senderId: row.senderId,
@@ -851,10 +980,24 @@ class MessageRepository {
         replyToId: payload.replyToId,
         attachment: payload.attachment,
         reactions: row.reactions,
-        editedAt: row.editedAt ?? existing?.editedAt,
+        editedAt: row.editedAt ?? editedAt,
         forwardedFrom: payload.forwardedFrom,
-      ),
     );
+  }
+
+  /// Searches the whole cloud history on the server, past what this device
+  /// has loaded. The results are not stored: an old message on its own
+  /// would leave a hole in the local history that paging could not see.
+  Future<List<Message>> searchServer(String query) async {
+    final hits = await _api.searchMessages(query);
+    final out = <Message>[];
+    for (final hit in hits) {
+      final chat = await _dao.chatById(hit.chatId);
+      if (chat == null) continue;
+      final message = _messageFromRow(chat, hit.message);
+      if (message != null) out.add(message);
+    }
+    return out;
   }
 
   // ------------------------------------------------------------ receiving
@@ -1324,8 +1467,9 @@ class MessageRepository {
   static String previewOf(String body, AttachmentPayload? attachment) {
     if (body.isNotEmpty) return body;
     if (attachment == null) return '';
-    return attachment.fileName ??
-        (attachment.isImage ? PreviewTokens.photo : PreviewTokens.file);
+    if (attachment.voice) return PreviewTokens.voice;
+    if (attachment.isImage) return PreviewTokens.photo;
+    return attachment.fileName ?? PreviewTokens.file;
   }
 
   static String _previewOfMessage(Message m) => previewOf(m.body, m.attachment);
@@ -1379,5 +1523,6 @@ class MessageRepository {
     await _arrivals.close();
     await _identityAlerts.close();
     await _decryptFailures.close();
+    await _uploadProgress.close();
   }
 }

@@ -70,7 +70,7 @@ bool shouldNotify({
       ? message.body
       : attachment == null
           ? texts.newMessage
-          : attachment.mimeType.startsWith('audio/')
+          : attachment.voice
               ? texts.voice
               : attachment.isImage
                   ? texts.photo

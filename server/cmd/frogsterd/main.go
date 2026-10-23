@@ -124,7 +124,11 @@ func run() error {
 	router := delivery.NewRouter(hub, st, broker, presence, log)
 	go router.RunBrokerLoop(ctx)
 
+	// Who is online, as people who share a chat with them see it.
+	online := delivery.NewPresence(st, router, log)
+
 	frames := delivery.NewFrameHandler(router, limiter, log)
+	frames.SetPresence(online)
 
 	onConnect := func(ctx context.Context, key ws.ClientKey) {
 		if err := broker.Subscribe(ctx, key.UserID); err != nil {
@@ -133,6 +137,8 @@ func run() error {
 		if err := st.TouchDevice(ctx, key.DeviceID); err != nil {
 			log.Warn("touch device", "err", err, "device_id", key.DeviceID)
 		}
+		// Active until the app says it went to the background.
+		online.DeviceActive(ctx, key)
 		if _, err := router.FlushOffline(ctx, key); err != nil {
 			log.Warn("flush offline queue", "err", err, "device_id", key.DeviceID)
 		}
@@ -140,6 +146,11 @@ func run() error {
 	onDisconnect := func(ctx context.Context, key ws.ClientKey) {
 		if err := broker.Unsubscribe(ctx, key.UserID); err != nil {
 			log.Warn("unsubscribe from user channel", "err", err, "user_id", key.UserID)
+		}
+		// A reconnect replaces the old socket, which then closes: the device
+		// is still here on the new one.
+		if !hub.IsLocal(key) {
+			online.DeviceIdle(ctx, key)
 		}
 	}
 
@@ -150,6 +161,7 @@ func run() error {
 	)
 
 	api := httpapi.NewServer(cfg, st, tokens, limiter, router, wsHandler, log)
+	api.SetPresence(online)
 	api.SetReadinessCheck(func(ctx context.Context) error {
 		if err := st.Ping(ctx); err != nil {
 			return fmt.Errorf("postgres: %w", err)

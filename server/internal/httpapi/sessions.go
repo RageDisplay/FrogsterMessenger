@@ -12,6 +12,7 @@ type sessionJSON struct {
 	ID         string `json:"id"`
 	DeviceID   string `json:"device_id"`
 	UserAgent  string `json:"user_agent"`
+	DeviceName string `json:"device_name"`
 	CreatedAt  string `json:"created_at"`
 	LastUsedAt string `json:"last_used_at"`
 	Current    bool   `json:"current"`
@@ -38,6 +39,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 			ID:         sess.ID.String(),
 			DeviceID:   sess.DeviceID.String(),
 			UserAgent:  sess.UserAgent,
+			DeviceName: sess.DeviceName,
 			CreatedAt:  sess.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 			LastUsedAt: sess.LastUsedAt.UTC().Format("2006-01-02T15:04:05Z"),
 			Current:    sess.DeviceID == claims.DeviceID,

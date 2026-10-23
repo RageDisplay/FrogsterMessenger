@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -22,14 +23,27 @@ type userJSON struct {
 	Username    string `json:"username"`
 	DisplayName string `json:"display_name,omitempty"`
 	Bio         string `json:"bio,omitempty"`
+	// AvatarVersion is 0 or negative without an avatar.
+	AvatarVersion int `json:"avatar_version,omitempty"`
+}
+
+// meJSON is the caller's own profile, with their privacy settings.
+type meJSON struct {
+	userJSON
+	LastSeenVisible bool `json:"last_seen_visible"`
+}
+
+func toMeJSON(u *models.User) meJSON {
+	return meJSON{userJSON: toUserJSON(u), LastSeenVisible: u.LastSeenVisible}
 }
 
 func toUserJSON(u *models.User) userJSON {
 	return userJSON{
-		UserID:      u.ID.String(),
-		Username:    u.Username,
-		DisplayName: u.DisplayName,
-		Bio:         u.Bio,
+		UserID:        u.ID.String(),
+		Username:      u.Username,
+		DisplayName:   u.DisplayName,
+		Bio:           u.Bio,
+		AvatarVersion: u.AvatarVersion,
 	}
 }
 
@@ -98,12 +112,13 @@ func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error", s.log)
 		return
 	}
-	writeJSON(w, http.StatusOK, toUserJSON(user), s.log)
+	writeJSON(w, http.StatusOK, toMeJSON(user), s.log)
 }
 
 type updateProfileRequest struct {
-	DisplayName *string `json:"display_name"`
-	Bio         *string `json:"bio"`
+	DisplayName     *string `json:"display_name"`
+	Bio             *string `json:"bio"`
+	LastSeenVisible *bool   `json:"last_seen_visible"`
 }
 
 // handleUpdateMe changes the caller's display name and bio. Absent fields
@@ -141,7 +156,18 @@ func (s *Server) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user.DisplayName, user.Bio = name, bio
-	writeJSON(w, http.StatusOK, toUserJSON(user), s.log)
+	if req.LastSeenVisible != nil && *req.LastSeenVisible != user.LastSeenVisible {
+		if err := s.store.SetLastSeenVisible(r.Context(), claims.UserID, *req.LastSeenVisible); err != nil {
+			s.log.Error("set last seen visibility", "err", err)
+			writeErr(w, http.StatusInternalServerError, "internal error", s.log)
+			return
+		}
+		user.LastSeenVisible = *req.LastSeenVisible
+		if s.presence != nil {
+			s.presence.VisibilityChanged(context.WithoutCancel(r.Context()), claims.UserID)
+		}
+	}
+	writeJSON(w, http.StatusOK, toMeJSON(user), s.log)
 }
 
 type deleteAccountRequest struct {

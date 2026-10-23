@@ -36,6 +36,10 @@ class EnvelopeType {
 
   /// A chat's metadata or membership changed; refetch it.
   static const chatUpdated = 'chat_updated';
+
+  /// Presence: from us, whether this device is in the foreground; from the
+  /// server, a contact's status as we may see it.
+  static const presence = 'presence';
 }
 
 /// Errors the server reports in a way the client can act on, mirroring

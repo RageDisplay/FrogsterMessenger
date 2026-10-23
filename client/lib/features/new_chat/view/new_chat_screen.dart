@@ -10,7 +10,7 @@ import '../../../data/models/models.dart';
 import '../../../l10n/app_localizations.dart';
 import '../../../ui/theme/app_theme.dart';
 import '../../../ui/theme/pond_colors.dart';
-import '../../../ui/widgets/lily_avatar.dart';
+import '../../../ui/widgets/avatars.dart';
 
 /// Looks people up by the start of their username.
 typedef UserSearch = Future<List<UserProfile>> Function(String query);
@@ -111,7 +111,12 @@ class _SearchResults extends StatelessWidget {
         for (final user in visible)
           ListTile(
             onTap: () => onTap(user),
-            leading: LilyAvatar(seed: user.username, label: user.name, size: 40),
+            leading: UserAvatar(
+              userId: user.userId,
+              username: user.username,
+              name: user.name,
+              avatarVersion: user.avatarVersion,
+            ),
             title: Text(user.name, style: const TextStyle(fontWeight: FontWeight.w700)),
             subtitle: Text('@${user.username}', style: TextStyle(color: pond.inkMuted)),
             trailing: selected.contains(user.userId)
@@ -320,7 +325,8 @@ class NewGroupScreen extends StatefulWidget {
   });
 
   final UserSearch search;
-  final Future<void> Function(String title, List<UserProfile> members, ChatMode mode) onCreate;
+  final Future<void> Function(String title, List<UserProfile> members, ChatMode mode, bool hideHistory)
+      onCreate;
   final ChatMode initialMode;
 
   @override
@@ -334,6 +340,7 @@ class _NewGroupScreenState extends State<NewGroupScreen> {
   final _name = TextEditingController();
   final _picked = <String, UserProfile>{};
   late var _mode = widget.initialMode;
+  var _hideHistory = false;
   var _busy = false;
   String? _problem;
 
@@ -365,7 +372,7 @@ class _NewGroupScreenState extends State<NewGroupScreen> {
       _problem = null;
     });
     try {
-      await widget.onCreate(title, _picked.values.toList(), _mode);
+      await widget.onCreate(title, _picked.values.toList(), _mode, _mode == ChatMode.cloud && _hideHistory);
     } catch (e) {
       if (mounted) setState(() => _problem = l10n.actionFailed('$e'));
     } finally {
@@ -396,6 +403,15 @@ class _NewGroupScreenState extends State<NewGroupScreen> {
             counterText: '',
           ),
         ),
+        // A secret group has no history on the server to hide.
+        if (_mode == ChatMode.cloud)
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _hideHistory,
+            onChanged: (v) => setState(() => _hideHistory = v),
+            title: Text(l10n.hideHistoryTitle, style: const TextStyle(fontWeight: FontWeight.w600)),
+            subtitle: Text(l10n.hideHistoryHint, style: TextStyle(color: pond.inkMuted)),
+          ),
         if (_picked.isNotEmpty) ...[
           const SizedBox(height: 14),
           Wrap(
@@ -405,7 +421,13 @@ class _NewGroupScreenState extends State<NewGroupScreen> {
               for (final user in _picked.values)
                 InputChip(
                   label: Text(user.name),
-                  avatar: LilyAvatar(seed: user.username, label: user.name, size: 22),
+                  avatar: UserAvatar(
+                    userId: user.userId,
+                    username: user.username,
+                    name: user.name,
+                    avatarVersion: user.avatarVersion,
+                    size: 22,
+                  ),
                   onDeleted: () => _toggle(user),
                 ),
             ],

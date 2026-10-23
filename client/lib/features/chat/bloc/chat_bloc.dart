@@ -10,7 +10,7 @@ import '../../../data/models/models.dart';
 import '../../../data/repositories/attachment_repository.dart';
 import '../../../data/repositories/device_resolver.dart';
 import '../../../data/repositories/message_repository.dart';
-import '../view/chat_screen.dart';
+import '../attachments.dart';
 
 sealed class ChatEvent {
   const ChatEvent();
@@ -30,15 +30,14 @@ class ChatInfoChanged extends ChatEvent {
 }
 
 class ChatMessageSent extends ChatEvent {
-  const ChatMessageSent(this.body, {this.replyToId, this.attachment});
+  const ChatMessageSent(this.body, {this.replyToId, this.attachments = const []});
 
   final String body;
   final String? replyToId;
 
-  /// A file chosen but not yet uploaded. The bloc encrypts and uploads it
-  /// before the message goes out, so the reference in the message always
-  /// points at a blob that exists.
-  final PickedAttachment? attachment;
+  /// Files chosen but not yet uploaded. Each becomes a message of its own,
+  /// the first carrying the text; each goes out once its upload is done.
+  final List<PickedAttachment> attachments;
 }
 
 class ChatReactionToggled extends ChatEvent {
@@ -82,6 +81,13 @@ class _ChatTypingSeen extends ChatEvent {
 
   final String userId;
   final bool typing;
+}
+
+class _ChatUploadProgress extends ChatEvent {
+  const _ChatUploadProgress(this.messageId, this.fraction);
+
+  final String messageId;
+  final double fraction;
 }
 
 class ChatRetryRequested extends ChatEvent {
@@ -137,7 +143,7 @@ class ChatState {
     this.changedPeer,
     this.identityChanged = false,
     this.sendingBlocked = false,
-    this.uploading = false,
+    this.uploads = const {},
     this.loadingOlder = false,
     this.reachedStart = false,
     this.typingUserIds = const {},
@@ -159,8 +165,8 @@ class ChatState {
   /// in force. Under the default policy the message went out regardless.
   final bool sendingBlocked;
 
-  /// True while an attachment is being encrypted and uploaded.
-  final bool uploading;
+  /// Files being sent from here, by message id, with how far each has gone.
+  final Map<String, double> uploads;
 
   final bool loadingOlder;
 
@@ -193,7 +199,7 @@ class ChatState {
     PeerAddress? changedPeer,
     bool? identityChanged,
     bool? sendingBlocked,
-    bool? uploading,
+    Map<String, double>? uploads,
     bool? loadingOlder,
     bool? reachedStart,
     Set<String>? typingUserIds,
@@ -207,7 +213,7 @@ class ChatState {
         changedPeer: changedPeer ?? this.changedPeer,
         identityChanged: identityChanged ?? this.identityChanged,
         sendingBlocked: sendingBlocked ?? this.sendingBlocked,
-        uploading: uploading ?? this.uploading,
+        uploads: uploads ?? this.uploads,
         loadingOlder: loadingOlder ?? this.loadingOlder,
         reachedStart: reachedStart ?? this.reachedStart,
         typingUserIds: typingUserIds ?? this.typingUserIds,
@@ -234,6 +240,7 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     on<ChatMessageEdited>(_onEdited);
     on<ChatMessageDeleted>(_onDeleted);
     on<ChatRetryRequested>(_onRetry);
+    on<_ChatUploadProgress>(_onUploadProgress);
     on<ChatMessageForwarded>(_onForwarded);
     on<ChatComposerChanged>(_onComposerChanged);
     on<_ChatTypingSeen>(_onTypingSeen);
@@ -266,6 +273,9 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         if (!isClosed) add(_ChatTypingSeen(notice.userId, typing: false));
       });
     });
+    _uploadSub = _repository.uploadProgress.listen((progress) {
+      if (!isClosed) add(_ChatUploadProgress(progress.messageId, progress.fraction));
+    });
     _readSub = _repository.reads.listen((update) {
       if (update.chatId == state.chatId) add(ChatReadUpTo(update.seq));
     });
@@ -287,6 +297,7 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
   late final StreamSubscription<Message> _messageSub;
   late final StreamSubscription<Message> _removedSub;
   late final StreamSubscription<ReadUpdate> _readSub;
+  late final StreamSubscription<UploadProgress> _uploadSub;
   late final StreamSubscription<String> _chatSub;
   late final StreamSubscription<TypingNotice> _typingSub;
   final Map<String, Timer> _typingTimers = {};
@@ -348,44 +359,63 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     final chatId = state.chatId;
     if (chatId == null) return;
 
-    final picked = event.attachment;
-    if (event.body.trim().isEmpty && picked == null) return;
+    final body = event.body.trim();
+    final files = event.attachments;
+    if (body.isEmpty && files.isEmpty) return;
 
     try {
-      // Upload first: the message carries a reference to the blob, so sending
-      // before the upload finishes would point recipients at nothing.
-      AttachmentPayload? attachment;
-      if (picked != null) {
-        emit(state.copyWith(uploading: true));
-        final repository = _attachments;
-        if (repository == null) {
-          throw StateError('attachments are not configured');
-        }
-        attachment = await repository.upload(
-          bytes: picked.bytes,
-          mimeType: picked.mimeType,
-          fileName: picked.fileName,
-        );
-        emit(state.copyWith(uploading: false));
+      if (files.isEmpty) {
+        await _repository.send(chatId: chatId, body: body, replyToId: event.replyToId);
+        return;
       }
-
-      await _repository.send(
-        chatId: chatId,
-        body: event.body.trim(),
-        replyToId: event.replyToId,
-        attachment: attachment,
-      );
+      final attachments = _attachments;
+      if (attachments == null) throw StateError('attachments are not configured');
+      for (final (index, file) in files.indexed) {
+        late AttachmentPayload placeholder;
+        await _repository.sendFile(
+          chatId: chatId,
+          body: index == 0 ? body : '',
+          replyToId: index == 0 ? event.replyToId : null,
+          placeholder: (messageId) {
+            placeholder = AttachmentPayload.uploading(
+              messageId: messageId,
+              size: file.bytes.length,
+              mimeType: file.mimeType,
+              fileName: file.fileName,
+              width: file.width,
+              height: file.height,
+              voice: file.voice,
+              durationMs: file.durationMs,
+              waveform: file.waveform,
+            );
+            // The sender sees their own photo at once, before it is up.
+            attachments.preload(placeholder.blobId, file.bytes);
+            return placeholder;
+          },
+          upload: (onProgress) => attachments.uploadAs(
+            placeholder,
+            file.bytes,
+            onProgress: (p) => onProgress(p.fraction),
+          ),
+        );
+      }
     } on IdentityChangedException {
       // Strict policy only: the send was refused, so sending stays disabled
       // until the user verifies the new safety number.
-      emit(state.copyWith(
-        uploading: false,
-        identityChanged: true,
-        sendingBlocked: true,
-      ));
+      emit(state.copyWith(identityChanged: true, sendingBlocked: true));
     } catch (e) {
-      emit(state.copyWith(uploading: false, error: e.toString()));
+      emit(state.copyWith(error: e.toString()));
     }
+  }
+
+  void _onUploadProgress(_ChatUploadProgress event, Emitter<ChatState> emit) {
+    final uploads = {...state.uploads};
+    if (event.fraction >= 1) {
+      uploads.remove(event.messageId);
+    } else {
+      uploads[event.messageId] = event.fraction;
+    }
+    emit(state.copyWith(uploads: uploads));
   }
 
   Future<void> _onReaction(
@@ -493,7 +523,16 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       return a.sentAt.compareTo(b.sentAt);
     });
 
-    emit(state.copyWith(messages: updated));
+    // Uploaded, or given up on: either way no longer in progress.
+    final message = event.message;
+    final uploading =
+        (message.attachment?.isUploading ?? false) && message.status != MessageStatus.failed;
+    emit(state.copyWith(
+      messages: updated,
+      uploads: uploading || !state.uploads.containsKey(message.id)
+          ? null
+          : ({...state.uploads}..remove(message.id)),
+    ));
   }
 
   void _onRemoved(ChatMessageRemoved event, Emitter<ChatState> emit) {
@@ -548,6 +587,7 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     await _messageSub.cancel();
     await _removedSub.cancel();
     await _readSub.cancel();
+    await _uploadSub.cancel();
     await _chatSub.cancel();
     await _typingSub.cancel();
     for (final t in _typingTimers.values) {

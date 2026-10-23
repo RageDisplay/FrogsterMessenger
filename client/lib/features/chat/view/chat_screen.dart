@@ -13,7 +13,8 @@ import '../../../l10n/app_localizations.dart';
 import '../../../ui/format.dart';
 import '../../../ui/theme/app_theme.dart';
 import '../../../ui/theme/pond_colors.dart';
-import '../../../ui/widgets/lily_avatar.dart';
+import '../../../ui/widgets/avatars.dart';
+import '../attachments.dart';
 import '../bloc/chat_bloc.dart';
 import '../widgets/attachment_view.dart';
 import '../widgets/message_bubble.dart';
@@ -29,6 +30,8 @@ class ChatScreen extends StatefulWidget {
     this.onPickAttachment,
     this.onDownloadAttachment,
     this.onOpenAttachment,
+    this.onSaveAttachment,
+    this.cachedAttachment,
   });
 
   /// The signed-in user, to tell our reactions and messages apart.
@@ -40,14 +43,21 @@ class ChatScreen extends StatefulWidget {
   /// Asks which chat to forward a message to.
   final Future<Chat?> Function()? onPickForwardTarget;
 
-  /// Opens the file picker and returns the chosen file, or null if cancelled.
-  final Future<PickedAttachment?> Function()? onPickAttachment;
+  /// Opens a picker and returns the chosen files; empty if cancelled.
+  final Future<List<PickedAttachment>> Function(AttachSource source)? onPickAttachment;
 
   /// Fetches and decrypts an attachment.
-  final Future<Uint8List> Function(AttachmentPayload)? onDownloadAttachment;
+  final Future<Uint8List> Function(AttachmentPayload, void Function(double fraction) onProgress)?
+      onDownloadAttachment;
 
   /// Hands decrypted bytes to the platform to open.
   final void Function(AttachmentPayload, Uint8List)? onOpenAttachment;
+
+  /// Asks where to keep a decrypted file and saves it there.
+  final void Function(AttachmentPayload, Uint8List)? onSaveAttachment;
+
+  /// A file already fetched, if there is one: shown without a round trip.
+  final Uint8List? Function(AttachmentPayload)? cachedAttachment;
 
   /// Closes the conversation. Supplied in narrow layouts, where the chat
   /// covers the list; in two-pane layouts the list stays visible and no back
@@ -58,19 +68,6 @@ class ChatScreen extends StatefulWidget {
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
-}
-
-/// A file chosen by the user, before encryption.
-class PickedAttachment {
-  const PickedAttachment({
-    required this.bytes,
-    required this.mimeType,
-    required this.fileName,
-  });
-
-  final Uint8List bytes;
-  final String mimeType;
-  final String fileName;
 }
 
 class _ChatScreenState extends State<ChatScreen> {
@@ -177,9 +174,9 @@ class _ChatScreenState extends State<ChatScreen> {
   /// to know how far a download has got.
   final _downloads = <String, _DownloadState>{};
 
-  /// The file staged for sending, shown above the composer until sent.
-  PickedAttachment? _staged;
-  var _uploading = false;
+  /// Files staged for sending, shown above the composer until sent.
+  var _staged = <PickedAttachment>[];
+  var _picking = false;
 
   @override
   void dispose() {
@@ -208,40 +205,107 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     // A message needs either text or a file; an empty send is a no-op.
-    if (text.isEmpty && staged == null) return;
+    if (text.isEmpty && staged.isEmpty) return;
 
     context.read<ChatBloc>().add(
-          ChatMessageSent(text, attachment: staged, replyToId: _replyTo?.id),
+          ChatMessageSent(text, attachments: staged, replyToId: _replyTo?.id),
         );
     _draftTimer?.cancel();
     _composer.clear();
     setState(() {
-      _staged = null;
+      _staged = [];
       _replyTo = null;
     });
     _scrollToBottom();
   }
 
+  /// Asks where the file comes from, then lets the user pick it.
   Future<void> _pickAttachment() async {
     final picker = widget.onPickAttachment;
     if (picker == null) return;
+    final l10n = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
 
-    setState(() => _uploading = true);
-    try {
-      final picked = await picker();
-      if (picked != null && mounted) setState(() => _staged = picked);
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(AppLocalizations.of(context).couldNotReadFile('$e')),
+    final source = await showModalBottomSheet<AttachSource>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(8, 0, 8, 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.photo_library_outlined),
+                title: Text(l10n.attachGallery),
+                onTap: () => Navigator.of(sheetContext).pop(AttachSource.gallery),
+              ),
+              if (AttachmentPicker.hasCamera)
+                ListTile(
+                  leading: const Icon(Icons.photo_camera_outlined),
+                  title: Text(l10n.attachCamera),
+                  onTap: () => Navigator.of(sheetContext).pop(AttachSource.camera),
+                ),
+              ListTile(
+                leading: const Icon(Icons.insert_drive_file_outlined),
+                title: Text(l10n.attachFile),
+                subtitle: Text(l10n.attachFileHint),
+                onTap: () => Navigator.of(sheetContext).pop(AttachSource.file),
+              ),
+            ],
           ),
-        );
-      }
+        ),
+      ),
+    );
+    if (source == null || !mounted) return;
+
+    setState(() => _picking = true);
+    try {
+      final picked = await picker(source);
+      if (picked.isNotEmpty && mounted) setState(() => _staged = [..._staged, ...picked]);
+    } on PickRejected catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(l10n.fileTooLargeNamed(e.fileName))));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(l10n.couldNotReadFile('$e'))));
     } finally {
-      if (mounted) setState(() => _uploading = false);
+      if (mounted) setState(() => _picking = false);
     }
   }
+
+  /// Photos come in by themselves; anything else waits for a tap.
+  void _maybeAutoDownload(AttachmentPayload attachment) {
+    if (!attachment.isImage ||
+        attachment.isUploading ||
+        attachment.size > autoDownloadImageBytes ||
+        _downloads.containsKey(attachment.blobId)) {
+      return;
+    }
+    // Not during build: starting a download changes state.
+    _downloads[attachment.blobId] = const _DownloadState(state: AttachmentState.downloading);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _download(attachment);
+    });
+  }
+
+  void _openAttachment(AttachmentPayload attachment, Uint8List bytes) {
+    if (attachment.isImage) {
+      Navigator.of(context).push(MaterialPageRoute<void>(
+        builder: (_) => ImageViewer(
+          bytes: bytes,
+          title: attachment.fileName,
+          onSave: widget.onSaveAttachment == null
+              ? null
+              : () => widget.onSaveAttachment!(attachment, bytes),
+        ),
+      ));
+      return;
+    }
+    widget.onOpenAttachment?.call(attachment, bytes);
+  }
+
+  /// Decrypted bytes on hand for an attachment: downloaded in this screen,
+  /// or kept from earlier.
+  Uint8List? _bytesOf(AttachmentPayload attachment) =>
+      _downloads[attachment.blobId]?.bytes ?? widget.cachedAttachment?.call(attachment);
 
   /// Fetches and decrypts an attachment on demand.
   ///
@@ -258,7 +322,16 @@ class _ChatScreenState extends State<ChatScreen> {
     });
 
     try {
-      final bytes = await downloader(attachment);
+      var shown = 0.0;
+      final bytes = await downloader(attachment, (fraction) {
+        // A redraw per percent is plenty.
+        if (!mounted || fraction - shown < 0.01) return;
+        shown = fraction;
+        setState(() {
+          _downloads[attachment.blobId] =
+              _DownloadState(state: AttachmentState.downloading, progress: fraction);
+        });
+      });
       if (!mounted) return;
       setState(() {
         _downloads[attachment.blobId] = _DownloadState(
@@ -308,6 +381,8 @@ class _ChatScreenState extends State<ChatScreen> {
     final pond = context.pond;
     final canDelete = message.isOutgoing ||
         ((chat?.isGroup ?? false) && (chat?.isAdmin ?? false));
+    final attachment = message.attachment;
+    final saveable = attachment == null ? null : _bytesOf(attachment);
 
     final action = await showModalBottomSheet<String>(
       context: context,
@@ -353,6 +428,12 @@ class _ChatScreenState extends State<ChatScreen> {
                   title: Text(l10n.actionCopy),
                   onTap: () => Navigator.of(sheetContext).pop('copy'),
                 ),
+              if (saveable != null && widget.onSaveAttachment != null)
+                ListTile(
+                  leading: const Icon(Icons.download_rounded),
+                  title: Text(l10n.saveFile),
+                  onTap: () => Navigator.of(sheetContext).pop('save'),
+                ),
               if (message.status == MessageStatus.failed)
                 ListTile(
                   leading: const Icon(Icons.refresh_rounded),
@@ -391,6 +472,8 @@ class _ChatScreenState extends State<ChatScreen> {
       _startReply(message);
     } else if (action == 'forward') {
       if (context.mounted) await _forward(context, message);
+    } else if (action == 'save') {
+      widget.onSaveAttachment?.call(attachment!, saveable!);
     } else if (action == 'retry') {
       bloc.add(ChatRetryRequested(message));
     } else if (action == 'edit') {
@@ -463,10 +546,12 @@ class _ChatScreenState extends State<ChatScreen> {
                 if (state.identityChanged)
                   _IdentityChangeBanner(blocksSending: state.sendingBlocked),
                 Expanded(child: _buildBody(context, state)),
-                if (_staged != null)
-                  _StagedAttachment(
-                    attachment: _staged!,
-                    onRemove: () => setState(() => _staged = null),
+                if (_staged.isNotEmpty)
+                  _StagedAttachments(
+                    attachments: _staged,
+                    onRemove: (file) => setState(
+                      () => _staged = _staged.where((f) => !identical(f, file)).toList(),
+                    ),
                   ),
                 if (_editing != null)
                   _EditingBar(message: _editing!, onCancel: _cancelEditing),
@@ -482,7 +567,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   onChanged: _onComposerChanged,
                   onSend: () => _send(context),
                   onAttach: widget.onPickAttachment == null ||
-                          _uploading ||
+                          _picking ||
                           _editing != null
                       ? null
                       : _pickAttachment,
@@ -567,20 +652,24 @@ class _ChatScreenState extends State<ChatScreen> {
                 ChatReactionToggled(message.id, emoji, remove),
               ),
           attachmentBuilder: (attachment) {
+            final bytes = _bytesOf(attachment);
+            if (bytes == null) _maybeAutoDownload(attachment);
             final download = _downloads[attachment.blobId] ??
                 const _DownloadState(state: AttachmentState.idle);
 
             return AttachmentView(
               attachment: attachment,
-              state: download.state,
-              decrypted: download.bytes,
+              state: bytes != null ? AttachmentState.ready : download.state,
+              decrypted: bytes,
+              progress: download.progress,
+              uploadProgress: state.uploads[message.id],
               error: download.error,
               outgoing: message.isOutgoing,
               onDownload: () => _download(attachment),
-              onOpen: download.bytes == null
+              onOpen: bytes == null ? null : () => _openAttachment(attachment, bytes),
+              onSave: bytes == null || widget.onSaveAttachment == null
                   ? null
-                  : () => widget.onOpenAttachment
-                      ?.call(attachment, download.bytes!),
+                  : () => widget.onSaveAttachment!(attachment, bytes),
             );
           },
         );
@@ -756,6 +845,7 @@ class _Header extends StatelessWidget {
     final pond = context.pond;
     final l10n = AppLocalizations.of(context);
 
+    final peer = peerOf(chat, AvatarScope.of(context)?.selfUserId);
     final subtitle = typing ?? switch ((chat.isGroup, chat.isSecret)) {
       (true, true) => l10n.secretGroupSubtitle(chat.members.length),
       (true, false) => l10n.membersCount(chat.members.length),
@@ -787,13 +877,7 @@ class _Header extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(vertical: 2),
                 child: Row(
                   children: [
-                    LilyAvatar(
-                      seed: chat.peerUsername ?? chat.id,
-                      label: chat.displayName,
-                      icon: chat.isGroup ? Icons.groups_rounded : null,
-                      secret: chat.isSecret,
-                      size: 40,
-                    ),
+                    ChatAvatar(chat: chat, size: 40, showPresence: false),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Column(
@@ -816,17 +900,28 @@ class _Header extends StatelessWidget {
                                 const SizedBox(width: 4),
                               ],
                               Flexible(
-                                child: Text(
-                                  subtitle,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: typing != null
-                                        ? pond.accent
-                                        : chat.isSecret ? pond.mint : pond.inkMuted,
-                                  ),
-                                ),
+                                child: typing == null && peer != null
+                                    // A direct chat says whether the other
+                                    // person is around.
+                                    ? PresenceLine(
+                                        userId: peer.userId,
+                                        fallback: subtitle,
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color: chat.isSecret ? pond.mint : pond.inkMuted,
+                                        ),
+                                      )
+                                    : Text(
+                                        subtitle,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color: typing != null
+                                              ? pond.accent
+                                              : chat.isSecret ? pond.mint : pond.inkMuted,
+                                        ),
+                                      ),
                               ),
                             ],
                           ),
@@ -1040,55 +1135,89 @@ class _IdentityChangeBanner extends StatelessWidget {
 
 /// View state for one attachment download.
 class _DownloadState {
-  const _DownloadState({required this.state, this.bytes, this.error});
+  const _DownloadState({required this.state, this.bytes, this.error, this.progress = 0});
 
   final AttachmentState state;
+  final double progress;
   final Uint8List? bytes;
   final String? error;
 }
 
-/// The file waiting to be sent, with a way to change your mind.
-class _StagedAttachment extends StatelessWidget {
-  const _StagedAttachment({required this.attachment, required this.onRemove});
+/// The files waiting to be sent, each with a way to change your mind.
+class _StagedAttachments extends StatelessWidget {
+  const _StagedAttachments({required this.attachments, required this.onRemove});
 
-  final PickedAttachment attachment;
-  final VoidCallback onRemove;
+  final List<PickedAttachment> attachments;
+  final ValueChanged<PickedAttachment> onRemove;
 
   @override
   Widget build(BuildContext context) {
     final pond = context.pond;
+    final l10n = AppLocalizations.of(context);
 
     return Container(
+      height: 92,
       margin: const EdgeInsets.fromLTRB(10, 0, 10, 4),
-      padding: const EdgeInsets.fromLTRB(14, 4, 4, 4),
-      decoration: BoxDecoration(
-        color: pond.lily,
-        borderRadius: BorderRadius.circular(PondRadii.control),
-        border: Border.all(color: pond.outline),
-      ),
-      child: Row(
-        children: [
-          Icon(Icons.image_outlined, size: 20, color: pond.accent),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              attachment.fileName,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 14),
-            ),
-          ),
-          IconButton(
-            tooltip: AppLocalizations.of(context).removeAttachment,
-            onPressed: onRemove,
-            icon: const Icon(Icons.close_rounded, size: 20),
-          ),
-        ],
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: attachments.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final file = attachments[index];
+          return Stack(
+            children: [
+              Container(
+                width: 92,
+                height: 92,
+                decoration: BoxDecoration(
+                  color: pond.lily,
+                  borderRadius: BorderRadius.circular(PondRadii.control),
+                  border: Border.all(color: pond.outline),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: file.isImage
+                    ? Image.memory(file.bytes, fit: BoxFit.cover, cacheWidth: 200)
+                    : Padding(
+                        padding: const EdgeInsets.all(8),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.insert_drive_file_outlined, color: pond.accent),
+                            const SizedBox(height: 6),
+                            Text(
+                              file.fileName,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                          ],
+                        ),
+                      ),
+              ),
+              Positioned(
+                top: 2,
+                right: 2,
+                child: IconButton.filled(
+                  tooltip: l10n.removeAttachment,
+                  onPressed: () => onRemove(file),
+                  style: IconButton.styleFrom(
+                    backgroundColor: Colors.black54,
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size(26, 26),
+                    fixedSize: const Size(26, 26),
+                    padding: EdgeInsets.zero,
+                  ),
+                  icon: const Icon(Icons.close_rounded, size: 16),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
 }
-
 /// The composer: attach, the text field, send.
 class _Composer extends StatelessWidget {
   const _Composer({

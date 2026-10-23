@@ -1,8 +1,8 @@
 /// Finding a chat by its name or a message by its words.
 ///
-/// Searches what is on this device. Secret history exists nowhere else, so
-/// there is nothing more to search; cloud history older than what has been
-/// loaded is not covered yet.
+/// Searches what is on this device first, then the cloud history on the
+/// server for what the device never loaded. Secret history exists nowhere
+/// else, so for secret chats the device is all there is.
 library;
 
 import 'dart:async';
@@ -13,7 +13,7 @@ import '../../../data/models/models.dart';
 import '../../../l10n/app_localizations.dart';
 import '../../../ui/format.dart';
 import '../../../ui/theme/pond_colors.dart';
-import '../../../ui/widgets/lily_avatar.dart';
+import '../../../ui/widgets/avatars.dart';
 
 class SearchScreen extends StatefulWidget {
   const SearchScreen({
@@ -21,11 +21,15 @@ class SearchScreen extends StatefulWidget {
     required this.chats,
     required this.searchMessages,
     required this.onOpenChat,
+    this.searchServer,
   });
 
   final List<Chat> chats;
   final Future<List<Message>> Function(String query) searchMessages;
   final void Function(Chat chat) onOpenChat;
+
+  /// Cloud messages from the server's whole history.
+  final Future<List<Message>> Function(String query)? searchServer;
 
   @override
   State<SearchScreen> createState() => _SearchScreenState();
@@ -35,6 +39,8 @@ class _SearchScreenState extends State<SearchScreen> {
   Timer? _debounce;
   var _query = '';
   var _messages = const <Message>[];
+  var _older = const <Message>[];
+  var _searchingServer = false;
   var _generation = 0;
 
   @override
@@ -47,14 +53,37 @@ class _SearchScreenState extends State<SearchScreen> {
     setState(() => _query = value.trim());
     _debounce?.cancel();
     if (_query.length < 2) {
-      setState(() => _messages = const []);
+      setState(() {
+        _messages = const [];
+        _older = const [];
+      });
       return;
     }
     _debounce = Timer(const Duration(milliseconds: 250), () async {
       // An answer to an older query must not replace a newer one.
       final generation = ++_generation;
-      final found = await widget.searchMessages(_query);
-      if (mounted && generation == _generation) setState(() => _messages = found);
+      final query = _query;
+      final found = await widget.searchMessages(query);
+      if (!mounted || generation != _generation) return;
+      setState(() {
+        _messages = found;
+        _older = const [];
+        _searchingServer = widget.searchServer != null;
+      });
+      final server = widget.searchServer;
+      if (server == null) return;
+      List<Message> remote;
+      try {
+        remote = await server(query);
+      } catch (_) {
+        remote = const [];
+      }
+      if (!mounted || generation != _generation) return;
+      final local = {for (final m in found) m.id};
+      setState(() {
+        _older = remote.where((m) => !local.contains(m.id)).toList();
+        _searchingServer = false;
+      });
     });
   }
 
@@ -73,6 +102,25 @@ class _SearchScreenState extends State<SearchScreen> {
             .toList();
     final byId = {for (final c in widget.chats) c.id: c};
     final messages = _messages.where((m) => byId[m.chatId] != null).toList();
+    final older = _older.where((m) => byId[m.chatId] != null).toList();
+
+    Widget hit(Message message) => ListTile(
+          title: Text(
+            byId[message.chatId]!.displayName,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+          subtitle: _Highlighted(
+            text: message.body.isNotEmpty ? message.body : (message.attachment?.fileName ?? ''),
+            query: _query,
+          ),
+          trailing: Text(
+            formatListStamp(context, message.sentAt),
+            style: TextStyle(fontSize: 12, color: pond.inkMuted),
+          ),
+          onTap: () => widget.onOpenChat(byId[message.chatId]!),
+        );
 
     Widget section(String title) => Padding(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
@@ -104,39 +152,26 @@ class _SearchScreenState extends State<SearchScreen> {
       body: SafeArea(
         child: _query.isEmpty
             ? const SizedBox.shrink()
-            : chats.isEmpty && messages.isEmpty
+            : chats.isEmpty && messages.isEmpty && older.isEmpty && !_searchingServer
                 ? Center(child: Text(l10n.searchNothing, style: TextStyle(color: pond.inkMuted)))
                 : ListView(
                     children: [
                       if (chats.isNotEmpty) section(l10n.chatsTitle),
                       for (final chat in chats)
                         ListTile(
-                          leading: LilyAvatar(
-                            seed: chat.peerUsername ?? chat.id,
-                            label: chat.displayName,
-                            icon: chat.isGroup ? Icons.groups_rounded : null,
-                            secret: chat.isSecret,
-                            size: 40,
-                          ),
+                          leading: ChatAvatar(chat: chat, size: 40, showPresence: false),
                           title: Text(chat.displayName, style: const TextStyle(fontWeight: FontWeight.w700)),
                           onTap: () => widget.onOpenChat(chat),
                         ),
                       if (messages.isNotEmpty) section(l10n.searchMessages),
-                      for (final message in messages)
-                        ListTile(
-                          title: Text(
-                            byId[message.chatId]!.displayName,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontWeight: FontWeight.w700),
-                          ),
-                          subtitle: _Highlighted(text: message.body, query: _query),
-                          trailing: Text(
-                            formatListStamp(context, message.sentAt),
-                            style: TextStyle(fontSize: 12, color: pond.inkMuted),
-                          ),
-                          onTap: () => widget.onOpenChat(byId[message.chatId]!),
+                      for (final message in messages) hit(message),
+                      if (older.isNotEmpty || _searchingServer) section(l10n.searchOnServer),
+                      if (_searchingServer)
+                        const Padding(
+                          padding: EdgeInsets.all(12),
+                          child: Center(child: SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2))),
                         ),
+                      for (final message in older) hit(message),
                     ],
                   ),
       ),

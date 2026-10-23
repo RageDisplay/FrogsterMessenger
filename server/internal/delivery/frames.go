@@ -13,10 +13,14 @@ import (
 
 // FrameHandler processes frames arriving from connected clients.
 type FrameHandler struct {
-	router  *Router
-	limiter ratelimit.Limiter
-	log     *slog.Logger
+	router   *Router
+	limiter  ratelimit.Limiter
+	presence *Presence
+	log      *slog.Logger
 }
+
+// SetPresence lets clients say whether they are in the foreground.
+func (h *FrameHandler) SetPresence(p *Presence) { h.presence = p }
 
 // NewFrameHandler builds the inbound frame handler.
 func NewFrameHandler(router *Router, limiter ratelimit.Limiter, log *slog.Logger) *FrameHandler {
@@ -50,6 +54,8 @@ func (h *FrameHandler) HandleFrame(c *ws.Client, env *ws.Envelope) {
 		h.handleSenderKeys(ctx, c, env)
 	case ws.TypeRead:
 		h.handleRead(ctx, c, env)
+	case ws.TypePresence:
+		h.handlePresence(ctx, c, env)
 	default:
 		c.Send(&ws.Envelope{Version: 1, Type: ws.TypeError, Error: "unsupported frame type"})
 	}
@@ -200,5 +206,20 @@ func (h *FrameHandler) handleEphemeral(ctx context.Context, c *ws.Client, env *w
 			h.router.hub.Deliver(ws.Delivery{Key: target, Envelope: &out})
 		}
 		// Ephemeral frames are deliberately not queued for offline devices.
+	}
+}
+
+// handlePresence records whether the sending device is in use.
+func (h *FrameHandler) handlePresence(ctx context.Context, c *ws.Client, env *ws.Envelope) {
+	if h.presence == nil {
+		return
+	}
+	switch env.Kind {
+	case "active":
+		h.presence.DeviceActive(ctx, c.Key())
+	case "idle":
+		h.presence.DeviceIdle(ctx, c.Key())
+	default:
+		c.Send(&ws.Envelope{Version: 1, Type: ws.TypeError, Error: "unknown presence"})
 	}
 }
