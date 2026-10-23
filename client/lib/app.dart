@@ -50,6 +50,11 @@ import 'ui/widgets/brand_mark.dart';
 /// Users can always type another one.
 const String defaultServer = String.fromEnvironment('FROGSTER_SERVER');
 
+/// Certificate fingerprint of [defaultServer], for a server on a bare IP
+/// with its own certificate authority: `frogster fingerprint` on the server
+/// prints it. Built in, so testers never have to type it.
+const String defaultFingerprint = String.fromEnvironment('FROGSTER_FINGERPRINT');
+
 /// Shown under "About". Release builds pass the tag:
 /// `--dart-define=FROGSTER_VERSION=v1.2.0`.
 const String appVersion = String.fromEnvironment('FROGSTER_VERSION', defaultValue: '1.0.0');
@@ -246,13 +251,25 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
     _connection = null;
   }
 
+  /// The fingerprint built into the app, when the address is the built-in
+  /// server's. Another server never gets it: it would not match anyway.
+  static String? _builtInFingerprintFor(Uri baseUri) {
+    if (defaultServer.isEmpty || defaultFingerprint.isEmpty) return null;
+    try {
+      if (parseServerAddress(defaultServer).baseUri != baseUri) return null;
+      return normalizeFingerprint(defaultFingerprint);
+    } on ServerConfigException {
+      return null;
+    }
+  }
+
   /// Resolves what the user typed into a server configuration, pinning the
   /// server's own certificate authority when it has one.
   Future<ServerConfig> _resolveServer(LoginRequest request) async {
     final address = parseServerAddress(request.server);
     final fingerprint = request.fingerprint.isNotEmpty
         ? normalizeFingerprint(request.fingerprint)
-        : address.fingerprint;
+        : address.fingerprint ?? _builtInFingerprintFor(address.baseUri);
 
     // A server whose CA was pinned before keeps it, so the fingerprint is
     // asked for once, not on every sign-in.

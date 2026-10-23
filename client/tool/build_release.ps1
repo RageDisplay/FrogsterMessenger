@@ -5,10 +5,11 @@
 .EXAMPLE
   .\tool\build_release.ps1 -Server chat.example.com -Version 1.0.0
 
-  -Server   address offered on the sign-in screen (people can still type
-            another one). For a server on a bare IP with its own
-            certificate, use the connection link `frogster install`
-            printed, so the fingerprint comes with it.
+  -Server       address offered on the sign-in screen (people can still
+                type another one).
+  -Fingerprint  only for a server on a bare IP with its own certificate:
+                what `sudo frogster fingerprint` prints on the server.
+                Built in, so nobody has to type it.
   -Version  shown under Settings -> About.
 
 The Android build is signed with android\key.properties when it exists
@@ -16,6 +17,7 @@ The Android build is signed with android\key.properties when it exists
 #>
 param(
   [string]$Server = "",
+  [string]$Fingerprint = "",
   [string]$Version = "1.0.0"
 )
 
@@ -25,6 +27,10 @@ Set-Location $client
 
 $defines = @("--dart-define=FROGSTER_VERSION=$Version")
 if ($Server) { $defines += "--dart-define=FROGSTER_SERVER=$Server" }
+if ($Fingerprint) {
+  if (-not $Server) { throw "-Fingerprint needs -Server: it belongs to that server" }
+  $defines += "--dart-define=FROGSTER_FINGERPRINT=$Fingerprint"
+}
 
 $dist = Join-Path $client "dist"
 New-Item -ItemType Directory -Force $dist | Out-Null
