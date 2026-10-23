@@ -7,6 +7,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
+
 	"github.com/vectrixsecurity/frogster/server/internal/auth"
 	"github.com/vectrixsecurity/frogster/server/internal/models"
 	"github.com/vectrixsecurity/frogster/server/internal/store"
@@ -204,6 +206,9 @@ func (s *Server) handleDeleteMe(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("delete account", "err", err)
 		writeErr(w, http.StatusInternalServerError, "internal error", s.log)
 		return
+	}
+	if s.voice != nil {
+		s.voice.RemoveUserDevices(user.ID, uuid.Nil)
 	}
 	for chatID, epoch := range deletion.Groups {
 		s.notifyMembers(r, chatID, epoch)

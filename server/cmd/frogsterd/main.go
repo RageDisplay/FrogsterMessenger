@@ -29,6 +29,7 @@ import (
 	"github.com/vectrixsecurity/frogster/server/internal/ratelimit"
 	"github.com/vectrixsecurity/frogster/server/internal/storagecrypto"
 	"github.com/vectrixsecurity/frogster/server/internal/store"
+	"github.com/vectrixsecurity/frogster/server/internal/voice"
 	"github.com/vectrixsecurity/frogster/server/internal/ws"
 )
 
@@ -160,8 +161,33 @@ func run() error {
 		allowedOrigins(cfg), log,
 	)
 
+	// Voice channels: rooms in memory, sound over UDP or a WebSocket.
+	voices := voice.NewManager(router.NotifyVoice, log)
+	go voices.Run(ctx)
+	udpPort := 0
+	if cfg.VoiceUDPAddr != "off" {
+		addr, err := net.ResolveUDPAddr("udp", cfg.VoiceUDPAddr)
+		if err != nil {
+			return fmt.Errorf("FROGSTER_VOICE_UDP: %w", err)
+		}
+		conn, err := net.ListenUDP("udp", addr)
+		if err != nil {
+			return fmt.Errorf("listen for voice: %w", err)
+		}
+		udpPort = cfg.VoicePublicPort
+		log.Info("voice listening", "udp", cfg.VoiceUDPAddr, "public_port", udpPort)
+		go func() {
+			if err := voices.ServeUDP(ctx, conn); err != nil {
+				log.Error("voice udp stopped", "err", err)
+			}
+		}()
+	}
+	origins := allowedOrigins(cfg)
+	media := voices.MediaHandler(func(r *http.Request) bool { return ws.OriginAllowed(r, origins) })
+
 	api := httpapi.NewServer(cfg, st, tokens, limiter, router, wsHandler, log)
 	api.SetPresence(online)
+	api.SetVoice(voices, router, udpPort, media)
 	api.SetReadinessCheck(func(ctx context.Context) error {
 		if err := st.Ping(ctx); err != nil {
 			return fmt.Errorf("postgres: %w", err)

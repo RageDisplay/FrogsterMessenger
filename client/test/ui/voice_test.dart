@@ -20,7 +20,7 @@ class FakeOutput implements VoiceOutput {
   final duration = StreamController<Duration>.broadcast(sync: true);
   final complete = StreamController<void>.broadcast(sync: true);
   final calls = <String>[];
-  final played = <Uint8List>[];
+  final played = <Int16List>[];
   Duration? seekedTo;
 
   @override
@@ -30,9 +30,9 @@ class FakeOutput implements VoiceOutput {
   @override
   Stream<void> get onComplete => complete.stream;
   @override
-  Future<void> play(Uint8List wav) async {
+  Future<void> play(Int16List pcm) async {
     calls.add('play');
-    played.add(wav);
+    played.add(pcm);
   }
 
   @override
@@ -61,7 +61,7 @@ void main() {
       output: out,
       decode: (ogg) async {
         decodes++;
-        return Uint8List.fromList([...ogg, 0xFF]); // "decoded"
+        return Int16List.fromList([...ogg, 0xFF]); // "decoded"
       },
     );
   });

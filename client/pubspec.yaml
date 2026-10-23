@@ -57,10 +57,9 @@ dependencies:
   window_manager: ^0.5.2
   tray_manager: ^0.5.3
   file_picker: 13.1.0
-  record: 7.1.2
-  audioplayers: 6.8.1
   image: ^4.12.0
-  # RNNoise and Opus, built from source for each platform.
+  # All sound: devices through miniaudio, RNNoise and Opus, the voice
+  # channel engine. Built from source for each platform.
   frogster_audio:
     path: packages/frogster_audio
 

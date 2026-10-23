@@ -916,4 +916,82 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get previewVoiceShort => 'Voice message';
+
+  @override
+  String get speaker => 'Speaker';
+
+  @override
+  String get speakerDefault => 'System default';
+
+  @override
+  String get voiceChannels => 'Voice channels';
+
+  @override
+  String voiceChannelsActive(int count) {
+    return 'Voice channels · $count talking';
+  }
+
+  @override
+  String get voiceJoin => 'Join';
+
+  @override
+  String get voiceYouAreHere => 'You are here';
+
+  @override
+  String get voiceLeave => 'Leave the channel';
+
+  @override
+  String get voiceMute => 'Turn the microphone off';
+
+  @override
+  String get voiceUnmute => 'Turn the microphone on';
+
+  @override
+  String get voiceDeafen => 'Turn the sound off';
+
+  @override
+  String get voiceUndeafen => 'Turn the sound on';
+
+  @override
+  String get voiceConnecting => 'Connecting…';
+
+  @override
+  String get voiceConnected => 'Connected';
+
+  @override
+  String get voiceRelayed => 'Connected through the server\'s HTTPS port';
+
+  @override
+  String voicePing(int ms) {
+    return '$ms ms';
+  }
+
+  @override
+  String get voiceFull => 'The channel is full';
+
+  @override
+  String get voiceGone => 'This channel no longer exists';
+
+  @override
+  String get voiceJoinFailed => 'Could not join the channel';
+
+  @override
+  String get voiceNewChannel => 'New voice channel';
+
+  @override
+  String get voiceRenameChannel => 'Rename';
+
+  @override
+  String get voiceDeleteChannel => 'Delete';
+
+  @override
+  String get voiceManageChannel => 'Channel options';
+
+  @override
+  String get voiceChannelNameHint => 'For example, General';
+
+  @override
+  String voiceInChat(int count) {
+    return '$count in voice';
+  }
 }

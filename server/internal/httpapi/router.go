@@ -15,6 +15,7 @@ import (
 	"github.com/vectrixsecurity/frogster/server/internal/config"
 	"github.com/vectrixsecurity/frogster/server/internal/ratelimit"
 	"github.com/vectrixsecurity/frogster/server/internal/store"
+	"github.com/vectrixsecurity/frogster/server/internal/voice"
 )
 
 // DeviceNotifier announces device-set changes to a user's own devices and to
@@ -45,6 +46,11 @@ type Server struct {
 	notifier DeviceNotifier
 	presence PresenceView
 	log      *slog.Logger
+
+	voice         *voice.Manager
+	voiceNotifier VoiceChannelNotifier
+	voicePort     int
+	voiceMedia    http.Handler
 
 	// wsHandler serves the WebSocket upgrade. Injected so that httpapi does
 	// not depend on the ws package, keeping the dependency one-directional.
@@ -169,6 +175,22 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("DELETE /v1/chats/{id}/members/{user}", authed(s.handleRemoveMember))
 	mux.Handle("POST /v1/chats/{id}/leave", authed(s.handleLeaveChat))
 	mux.Handle("POST /v1/chats/{id}/clear", authed(s.handleClearChat))
+
+	mux.Handle("GET /v1/chats/{id}/voice", authed(s.handleListVoiceChannels))
+	mux.Handle("POST /v1/chats/{id}/voice", authed(s.handleCreateVoiceChannel))
+	mux.Handle("PATCH /v1/chats/{id}/voice/{channel}", authed(s.handleRenameVoiceChannel))
+	mux.Handle("DELETE /v1/chats/{id}/voice/{channel}", authed(s.handleDeleteVoiceChannel))
+	mux.Handle("POST /v1/chats/{id}/voice/{channel}/join", authed(s.handleJoinVoice))
+	mux.Handle("GET /v1/voice", authed(s.handleActiveVoice))
+	mux.Handle("POST /v1/voice/leave", authed(s.handleLeaveVoice))
+	mux.Handle("POST /v1/voice/state", authed(s.handleVoiceState))
+	// Sound itself, for networks without UDP. Each datagram authenticates
+	// on its own, so the socket needs no token; opening one is bounded by
+	// address instead.
+	if s.voiceMedia != nil {
+		mux.Handle("GET "+mediaPath,
+			ratelimit.Middleware(s.limiter, ratelimit.RuleVoiceMedia, ratelimit.ByIP("voice-media"), s.log)(s.voiceMedia))
+	}
 
 	mux.Handle("GET /v1/sessions", authed(s.handleListSessions))
 	mux.Handle("DELETE /v1/sessions/{id}", authed(s.handleRevokeSession))

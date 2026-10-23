@@ -20,6 +20,8 @@ import '../attachments.dart';
 import '../bloc/chat_bloc.dart';
 import '../widgets/attachment_view.dart';
 import '../widgets/message_bubble.dart';
+import '../../voice/voice_channels.dart';
+import '../../voice/voice_scope.dart';
 import '../widgets/voice_message_view.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -742,6 +744,13 @@ class _ChatScreenState extends State<ChatScreen> {
                     onOpenInfo: chat.isGroup ? widget.onOpenInfo : null,
                     typing: typingText,
                   ),
+                if (chat != null && chat.isGroup && chat.isCloud)
+                  Builder(builder: (context) {
+                    final voice = VoiceScope.of(context);
+                    return voice == null
+                        ? const SizedBox.shrink()
+                        : VoiceChannelsPanel(chat: chat, controller: voice);
+                  }),
                 if (state.identityChanged)
                   _IdentityChangeBanner(blocksSending: state.sendingBlocked),
                 Expanded(child: _buildBody(context, state)),

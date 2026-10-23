@@ -78,18 +78,22 @@ func NewHandler(
 }
 
 func originChecker(allowed []string) func(*http.Request) bool {
-	return func(r *http.Request) bool {
-		origin := r.Header.Get("Origin")
-		if origin == "" {
-			return true // non-browser client
-		}
-		for _, a := range allowed {
-			if a == "*" || strings.EqualFold(a, origin) {
-				return true
-			}
-		}
-		return false
+	return func(r *http.Request) bool { return OriginAllowed(r, allowed) }
+}
+
+// OriginAllowed reports whether a WebSocket handshake comes from a native
+// client or from one of the allowed browser origins.
+func OriginAllowed(r *http.Request, allowed []string) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true // non-browser client
 	}
+	for _, a := range allowed {
+		if a == "*" || strings.EqualFold(a, origin) {
+			return true
+		}
+	}
+	return false
 }
 
 // ServeHTTP authenticates the handshake and starts the connection pumps.

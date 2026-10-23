@@ -616,6 +616,9 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error", s.log)
 		return
 	}
+	if s.voice != nil {
+		s.voice.RemoveUser(chat.ID, target)
+	}
 	s.log.Info("group member removed", "chat_id", chat.ID, "epoch", epoch)
 	s.notifyMembers(r, chat.ID, epoch, target)
 	s.writeChat(w, r, chat.ID, claims.UserID, http.StatusOK)
@@ -640,6 +643,9 @@ func (s *Server) handleLeaveChat(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("leave chat", "err", err, "chat_id", chat.ID)
 		writeErr(w, http.StatusInternalServerError, "internal error", s.log)
 		return
+	}
+	if s.voice != nil {
+		s.voice.RemoveUser(chat.ID, claims.UserID)
 	}
 	s.notifyMembers(r, chat.ID, epoch, claims.UserID)
 	w.WriteHeader(http.StatusNoContent)

@@ -2,8 +2,8 @@
 #
 # Managed by deploy/install.sh, which writes deploy/.env (secrets) and
 # deploy/Caddyfile (TLS mode) next to this file. Only Caddy is reachable from
-# outside, on 80/443; the database, Redis and both servers live on an internal
-# network with no published ports.
+# outside, on 80/443, and frogsterd's voice relay on 7882/udp; the database,
+# Redis and filed live on an internal network with no published ports.
 
 name: frogster
 
@@ -62,6 +62,11 @@ services:
       FROGSTER_TRUSTED_PROXIES: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
       FROGSTER_LOG_LEVEL: ${FROGSTER_LOG_LEVEL:-info}
       FROGSTER_BLOB_DIR: /var/lib/frogster/blobs
+    # Voice channels take sound over UDP directly, not through Caddy: the
+    # datagrams are sealed per member already, and a proxy would only add
+    # delay. Clients fall back to a WebSocket through 443 without it.
+    ports:
+      - "7882:7882/udp"
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }

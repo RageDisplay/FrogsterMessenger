@@ -32,6 +32,7 @@ import 'data/repositories/group_cipher.dart';
 import 'data/repositories/key_maintenance.dart';
 import 'data/repositories/message_repository.dart';
 import 'data/repositories/presence_tracker.dart';
+import 'data/voice/voice_controller.dart';
 import 'features/auth/view/login_screen.dart';
 import 'features/chat/attachments.dart';
 import 'features/chat/bloc/chat_bloc.dart';
@@ -42,6 +43,8 @@ import 'features/new_chat/view/new_chat_screen.dart';
 import 'features/search/view/search_screen.dart';
 import 'features/settings/view/safety_number_screen.dart';
 import 'features/settings/view/settings_screen.dart';
+import 'features/voice/voice_bar.dart';
+import 'features/voice/voice_scope.dart';
 import 'l10n/app_localizations.dart';
 import 'ui/adaptive/adaptive_shell.dart';
 import 'ui/desktop/desktop_shell.dart';
@@ -126,7 +129,11 @@ class _FrogsterAppState extends State<FrogsterApp> {
                 avatars: session?.avatars,
                 presence: session?.presence,
                 selfUserId: session?.selfUserId,
-                child: child!,
+                child: VoiceScope(
+                  controller: session?.voice,
+                  openChat: session?.openChat,
+                  child: _VoiceFrame(child: child!),
+                ),
               ),
             ),
           );
@@ -137,13 +144,42 @@ class _FrogsterAppState extends State<FrogsterApp> {
   }
 }
 
-/// What [AvatarScope] hands down for one signed-in session.
+/// What [AvatarScope] and [VoiceScope] hand down for one signed-in session.
 class _SessionScope {
-  const _SessionScope({required this.avatars, required this.presence, required this.selfUserId});
+  const _SessionScope({
+    required this.avatars,
+    required this.presence,
+    required this.selfUserId,
+    required this.voice,
+    required this.openChat,
+  });
 
   final AvatarStore avatars;
   final PresenceTracker presence;
   final String selfUserId;
+  final VoiceController voice;
+  final void Function(String chatId) openChat;
+}
+
+/// Every screen, with the call bar over it while in a voice channel.
+class _VoiceFrame extends StatelessWidget {
+  const _VoiceFrame({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final scope = VoiceScope.scopeOf(context);
+    final voice = scope?.notifier;
+    if (voice?.current == null) return child;
+    return Column(
+      children: [
+        VoiceBar(controller: voice!, onOpen: scope?.openChat),
+        // The bar took the status bar's place.
+        Expanded(child: MediaQuery.removePadding(context: context, removeTop: true, child: child)),
+      ],
+    );
+  }
 }
 
 class _AppRoot extends StatefulWidget {
@@ -204,7 +240,10 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
   AvatarStore? _avatars;
 
   /// One voice message at a time, across every chat.
-  final _voicePlayer = VoicePlayer();
+  late final _voicePlayer = VoicePlayer(speaker: () => widget.preferences.speaker);
+
+  /// Voice channels of the signed-in session.
+  VoiceController? _voice;
   PresenceTracker? _presence;
   KeyMaintenance? _keyMaintenance;
 
@@ -517,9 +556,25 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
     );
     presence.setActive(_lifecycle == AppLifecycleState.resumed);
     if (!mounted) return;
+    _voice?.dispose();
+    final voice = VoiceController(
+      api: api,
+      frames: connection.ws.envelopes,
+      connection: connection.ws.connectionState,
+      preferences: widget.preferences,
+      selfUserId: account.userId,
+      startCall: (grant, prefs) => NativeVoiceCall.start(connection.server, grant, prefs),
+    );
     _avatars = avatars;
     _presence = presence;
-    widget.session.value = _SessionScope(avatars: avatars, presence: presence, selfUserId: account.userId);
+    _voice = voice;
+    widget.session.value = _SessionScope(
+      avatars: avatars,
+      presence: presence,
+      selfUserId: account.userId,
+      voice: voice,
+      openChat: _openChatFromCall,
+    );
     setState(() {
       _account = account;
       _resolver = resolver;
@@ -573,6 +628,8 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
       await _avatars?.clear();
     }
     widget.session.value = null;
+    _voice?.dispose();
+    _voice = null;
     await _presence?.dispose();
     _presence = null;
     _avatars = null;
@@ -1058,6 +1115,13 @@ class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
     );
     _clearedFor = null;
     await _notifications.show(chatId: chat.id, title: content.title, body: content.body);
+  }
+
+  /// The user tapped the call bar: back to the group the call is in.
+  Future<void> _openChatFromCall(String chatId) async {
+    Navigator.of(context).popUntil((route) => route.isFirst);
+    final chat = _chats.where((c) => c.id == chatId).firstOrNull ?? await _dao?.chatById(chatId);
+    if (chat != null && mounted) setState(() => _selected = chat);
   }
 
   /// The user tapped a notification: show that chat.

@@ -2,6 +2,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:frogster_audio/frogster_audio.dart' show AudioDevice;
 
 import '../../../data/audio/voice_player.dart';
 import '../../../data/audio/voice_recording.dart';
@@ -517,18 +518,51 @@ class _SoundSection extends StatefulWidget {
 enum _TestStage { idle, recording, playing }
 
 class _SoundSectionState extends State<_SoundSection> {
-  List<InputDevice>? _devices;
+  List<AudioDevice>? _microphones;
+  List<AudioDevice>? _speakers;
   var _test = _TestStage.idle;
   VoiceRecording? _recording;
 
   @override
   void initState() {
     super.initState();
-    listMicrophones().then((d) {
-      if (mounted) setState(() => _devices = d);
-    }).catchError((Object _) {
-      if (mounted) setState(() => _devices = const []);
+    Future<List<AudioDevice>> list(Future<List<AudioDevice>> Function() f) =>
+        f().catchError((Object _) => const <AudioDevice>[]);
+    list(listMicrophones).then((d) {
+      if (mounted) setState(() => _microphones = d);
     });
+    list(listSpeakers).then((d) {
+      if (mounted) setState(() => _speakers = d);
+    });
+  }
+
+  /// A device picker: the system's default, or one of [devices].
+  Widget _picker({
+    required IconData icon,
+    required String title,
+    required String defaultLabel,
+    required List<AudioDevice>? devices,
+    required String? chosen,
+    required void Function(String? id) onChanged,
+  }) {
+    final known = devices?.any((d) => d.id == chosen) ?? false;
+    return ListTile(
+      leading: Icon(icon),
+      title: Text(title),
+      subtitle: devices == null
+          ? const LinearProgressIndicator(minHeight: 2)
+          : DropdownButton<String?>(
+              isExpanded: true,
+              underline: const SizedBox.shrink(),
+              value: known ? chosen : null,
+              items: [
+                DropdownMenuItem(value: null, child: Text(defaultLabel)),
+                for (final d in devices)
+                  DropdownMenuItem(value: d.id, child: Text(d.name, overflow: TextOverflow.ellipsis)),
+              ],
+              onChanged: _test == _TestStage.idle ? onChanged : null,
+            ),
+    );
   }
 
   @override
@@ -572,31 +606,25 @@ class _SoundSectionState extends State<_SoundSection> {
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
     final prefs = widget.preferences;
-    final devices = _devices;
-    final known = devices?.any((d) => d.id == prefs.microphone) ?? false;
     return _Pad(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Column(
         children: [
-          ListTile(
-            leading: const Icon(Icons.mic_none_rounded),
-            title: Text(l10n.microphone),
-            subtitle: devices == null
-                ? const LinearProgressIndicator(minHeight: 2)
-                : DropdownButton<String?>(
-                    isExpanded: true,
-                    underline: const SizedBox.shrink(),
-                    value: known ? prefs.microphone : null,
-                    items: [
-                      DropdownMenuItem(value: null, child: Text(l10n.microphoneDefault)),
-                      for (final d in devices)
-                        DropdownMenuItem(
-                          value: d.id,
-                          child: Text(d.label.isEmpty ? d.id : d.label, overflow: TextOverflow.ellipsis),
-                        ),
-                    ],
-                    onChanged: _test == _TestStage.idle ? prefs.setMicrophone : null,
-                  ),
+          _picker(
+            icon: Icons.mic_none_rounded,
+            title: l10n.microphone,
+            defaultLabel: l10n.microphoneDefault,
+            devices: _microphones,
+            chosen: prefs.microphone,
+            onChanged: prefs.setMicrophone,
+          ),
+          _picker(
+            icon: Icons.headphones_rounded,
+            title: l10n.speaker,
+            defaultLabel: l10n.speakerDefault,
+            devices: _speakers,
+            chosen: prefs.speaker,
+            onChanged: prefs.setSpeaker,
           ),
           SwitchListTile(
             secondary: const Icon(Icons.noise_aware_rounded),

@@ -13,6 +13,7 @@ import '../../../ui/theme/pond_colors.dart';
 import '../../../ui/widgets/brand_mark.dart';
 import '../../../ui/widgets/avatars.dart';
 import '../../../ui/widgets/pond_nav_bar.dart';
+import '../../voice/voice_scope.dart';
 
 /// Which conversations the list shows.
 enum ChatFilter { all, direct, groups, secret }
@@ -487,6 +488,7 @@ class _ChatRow extends StatelessWidget {
                           Icon(Icons.notifications_off_outlined, size: 14, color: pond.inkMuted),
                           const SizedBox(width: 4),
                         ],
+                        if (chat.isGroup && chat.isCloud) _InVoice(chatId: chat.id),
                         if (chat.lastMessageAt != null)
                           Text(
                             formatListStamp(context, chat.lastMessageAt!),
@@ -540,6 +542,34 @@ class _ChatRow extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// How many are talking in a group's voice channels, when anyone is.
+class _InVoice extends StatelessWidget {
+  const _InVoice({required this.chatId});
+
+  final String chatId;
+
+  @override
+  Widget build(BuildContext context) {
+    final people = VoiceScope.of(context)?.peopleIn(chatId) ?? 0;
+    if (people == 0) return const SizedBox.shrink();
+    final pond = context.pond;
+    return Semantics(
+      label: AppLocalizations.of(context).voiceInChat(people),
+      child: Padding(
+        padding: const EdgeInsets.only(right: 6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.graphic_eq_rounded, size: 14, color: pond.mint),
+            const SizedBox(width: 2),
+            Text('$people', style: TextStyle(fontSize: 12, color: pond.mint, fontWeight: FontWeight.w700)),
+          ],
         ),
       ),
     );

@@ -10,6 +10,7 @@ const String _kLocale = 'frogster.pref.locale';
 const String _kNotify = 'frogster.pref.notify';
 const String _kNotifyPreview = 'frogster.pref.notify_preview';
 const String _kMicrophone = 'frogster.pref.microphone';
+const String _kSpeaker = 'frogster.pref.speaker';
 const String _kNoiseSuppression = 'frogster.pref.noise_suppression';
 const String _kAutoGain = 'frogster.pref.auto_gain';
 
@@ -30,11 +31,16 @@ class AppPreferences extends ChangeNotifier {
   bool _notifications = true;
   bool _notificationPreview = true;
   String? _microphone;
+  String? _speaker;
   bool _noiseSuppression = true;
   bool _autoGain = true;
 
   /// The input device to record from; null for the system's default.
   String? get microphone => _microphone;
+
+  /// The output device for voice messages and channels; null for the
+  /// system's default.
+  String? get speaker => _speaker;
 
   /// Background noise removed from voice messages and calls.
   bool get noiseSuppression => _noiseSuppression;
@@ -62,6 +68,7 @@ class AppPreferences extends ChangeNotifier {
     _notifications = await _values.read(_kNotify) != 'off';
     _notificationPreview = await _values.read(_kNotifyPreview) != 'off';
     _microphone = await _values.read(_kMicrophone);
+    _speaker = await _values.read(_kSpeaker);
     _noiseSuppression = await _values.read(_kNoiseSuppression) != 'off';
     _autoGain = await _values.read(_kAutoGain) != 'off';
     notifyListeners();
@@ -93,6 +100,16 @@ class AppPreferences extends ChangeNotifier {
       await _values.delete(_kMicrophone);
     } else {
       await _values.write(_kMicrophone, deviceId);
+    }
+  }
+
+  Future<void> setSpeaker(String? deviceId) async {
+    _speaker = deviceId;
+    notifyListeners();
+    if (deviceId == null) {
+      await _values.delete(_kSpeaker);
+    } else {
+      await _values.write(_kSpeaker, deviceId);
     }
   }
 

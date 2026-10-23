@@ -149,7 +149,8 @@ void main() {
 
     Future<Uint8List?> settled(AvatarOwner owner, String id, int version, [AvatarStore? s]) async {
       final value = (s ?? store).watch(owner, id, version);
-      for (var i = 0; i < 50 && value.value == null; i++) {
+      // Generous: a full test run keeps the machine busy.
+      for (var i = 0; i < 500 && value.value == null; i++) {
         await Future<void>.delayed(const Duration(milliseconds: 10));
       }
       return value.value;
@@ -159,6 +160,10 @@ void main() {
       expect(await settled(AvatarOwner.user, 'u1', 1), [1, 2, 3]);
       expect(await settled(AvatarOwner.user, 'u1', 1), [1, 2, 3]);
       expect(fetched, ['user_u1']);
+      // The copy on disk is written behind the fetch.
+      for (var i = 0; i < 500 && dir.listSync().isEmpty; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
 
       final restarted = AvatarStore(fetch: (_, _) async => fail('the disk copy was ignored'), cacheDir: dir);
       expect(await settled(AvatarOwner.user, 'u1', 1, restarted), [1, 2, 3]);
@@ -172,7 +177,7 @@ void main() {
       expect(value.value, [1, 2, 3]);
       // Disk writes run behind; wait for the state, not a guessed delay.
       Future<void> until(bool Function() done) async {
-        for (var i = 0; i < 200 && !done(); i++) {
+        for (var i = 0; i < 500 && !done(); i++) {
           await Future<void>.delayed(const Duration(milliseconds: 10));
         }
       }

@@ -21,12 +21,37 @@ import (
 	"github.com/vectrixsecurity/frogster/server/internal/ratelimit"
 	"github.com/vectrixsecurity/frogster/server/internal/storagecrypto"
 	"github.com/vectrixsecurity/frogster/server/internal/store"
+	"github.com/vectrixsecurity/frogster/server/internal/voice"
 )
 
 // recordingNotifier remembers which chats were announced to whom.
 type recordingNotifier struct {
 	mu      sync.Mutex
 	updated map[uuid.UUID][]uuid.UUID
+	voice   map[uuid.UUID]int // chats told their voice channels changed
+}
+
+func (n *recordingNotifier) NotifyVoiceChannels(_ context.Context, chatID uuid.UUID) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.voice == nil {
+		n.voice = map[uuid.UUID]int{}
+	}
+	n.voice[chatID]++
+}
+
+func (n *recordingNotifier) voiceTold(chatID uuid.UUID) int {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		n.mu.Lock()
+		got := n.voice[chatID]
+		n.mu.Unlock()
+		if got > 0 {
+			return got
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return 0
 }
 
 func (n *recordingNotifier) NotifyDeviceAdded(context.Context, uuid.UUID, uuid.UUID)   {}
@@ -59,6 +84,7 @@ type apiFixture struct {
 	srv      *httptest.Server
 	tokens   *auth.Manager
 	notifier *recordingNotifier
+	voice    *voice.Manager
 }
 
 type apiUser struct {
@@ -88,9 +114,11 @@ func newAPI(t *testing.T) *apiFixture {
 	tokens := auth.NewManager([]byte("test-secret-test-secret-test-secret!"), time.Hour, 24*time.Hour)
 	notifier := &recordingNotifier{updated: map[uuid.UUID][]uuid.UUID{}}
 	api := NewServer(&config.Config{}, st, tokens, ratelimit.NewMemoryLimiter(), notifier, nil, log)
+	voices := voice.NewManager(nil, log)
+	api.SetVoice(voices, notifier, 7882, voices.MediaHandler(func(*http.Request) bool { return true }))
 	srv := httptest.NewServer(api.Routes())
 	t.Cleanup(srv.Close)
-	return &apiFixture{t: t, st: st, srv: srv, tokens: tokens, notifier: notifier}
+	return &apiFixture{t: t, st: st, srv: srv, tokens: tokens, notifier: notifier, voice: voices}
 }
 
 func (f *apiFixture) user(prefix string) apiUser {
@@ -301,11 +329,14 @@ func TestSecretGroupTitleNeverReachesTheServer(t *testing.T) {
 
 func TestSearchAndProfile(t *testing.T) {
 	f := newAPI(t)
-	me := f.user("srch")
-	other := f.user("srch")
+	// A prefix of this run's own: the test database keeps the users of
+	// every earlier run, and a page of results holds only so many.
+	prefix := "s" + uuid.NewString()[:6]
+	me := f.user(prefix)
+	other := f.user(prefix)
 
 	var found struct{ Users []userJSON }
-	if status := f.call(me, "GET", "/v1/users/search?q=@srch_", nil, &found); status != http.StatusOK {
+	if status := f.call(me, "GET", "/v1/users/search?q=@"+prefix+"_", nil, &found); status != http.StatusOK {
 		t.Fatalf("search: %d", status)
 	}
 	sawOther := false

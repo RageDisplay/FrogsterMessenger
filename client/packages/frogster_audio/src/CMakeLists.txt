@@ -83,7 +83,10 @@ if(NOT MSVC)
   target_compile_options(rnnoise PRIVATE ${FROGSTER_HARDENING} -O2)
 endif()
 
-add_library(frogster_audio SHARED frogster_audio.c)
+# Sound devices through miniaudio 0.11.22 (one header, public domain or
+# MIT-0): WASAPI on Windows, AAudio with an OpenSL ES fallback on Android.
+add_library(frogster_audio SHARED frogster_audio.c fa_io.c fa_call.c)
+target_include_directories(frogster_audio PRIVATE .)
 if(NOT MSVC)
   target_compile_options(frogster_audio PRIVATE ${FROGSTER_HARDENING} -O2)
   target_link_options(frogster_audio PRIVATE -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack)
@@ -92,6 +95,12 @@ else()
   target_link_options(frogster_audio PRIVATE /NXCOMPAT /DYNAMICBASE)
 endif()
 target_link_libraries(frogster_audio PRIVATE opus rnnoise)
+if(ANDROID)
+  # miniaudio loads AAudio and OpenSL ES at run time.
+  target_link_libraries(frogster_audio PRIVATE dl m)
+elseif(NOT WIN32)
+  target_link_libraries(frogster_audio PRIVATE dl m pthread)
+endif()
 
 set_target_properties(frogster_audio PROPERTIES
   PUBLIC_HEADER frogster_audio.h

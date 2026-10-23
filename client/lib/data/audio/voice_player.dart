@@ -2,8 +2,9 @@
 library;
 
 import 'dart:async';
+import 'dart:isolate';
+import 'dart:typed_data';
 
-import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:frogster_audio/frogster_audio.dart';
 
@@ -12,7 +13,7 @@ abstract interface class VoiceOutput {
   Stream<Duration> get onPosition;
   Stream<Duration> get onDuration;
   Stream<void> get onComplete;
-  Future<void> play(Uint8List wav);
+  Future<void> play(Int16List pcm);
   Future<void> pause();
   Future<void> resume();
   Future<void> stop();
@@ -20,35 +21,85 @@ abstract interface class VoiceOutput {
   Future<void> dispose();
 }
 
+/// The speaker chosen in the settings, through the native library.
 class _Speakers implements VoiceOutput {
-  final _player = AudioPlayer();
+  _Speakers(this._device);
+
+  final String? Function() _device;
+  PcmPlayer? _player;
+  Timer? _poll;
+  final _position = StreamController<Duration>.broadcast();
+  final _duration = StreamController<Duration>.broadcast();
+  final _complete = StreamController<void>.broadcast();
 
   @override
-  Stream<Duration> get onPosition => _player.onPositionChanged;
+  Stream<Duration> get onPosition => _position.stream;
   @override
-  Stream<Duration> get onDuration => _player.onDurationChanged;
+  Stream<Duration> get onDuration => _duration.stream;
   @override
-  Stream<void> get onComplete => _player.onPlayerComplete;
+  Stream<void> get onComplete => _complete.stream;
+
   @override
-  Future<void> play(Uint8List wav) => _player.play(BytesSource(wav, mimeType: 'audio/wav'));
+  Future<void> play(Int16List pcm) async {
+    await stop();
+    final player = PcmPlayer(pcm, deviceId: _device());
+    _player = player;
+    _duration.add(player.duration);
+    player.play();
+    _follow(player);
+  }
+
+  /// Reports the position while it plays, and the end when it gets there.
+  void _follow(PcmPlayer player) {
+    if (_poll?.isActive ?? false) return;
+    _poll = Timer.periodic(const Duration(milliseconds: 50), (_) {
+      _position.add(player.position);
+      if (!player.playing && player.position >= player.duration) {
+        _poll?.cancel();
+        _complete.add(null);
+      }
+    });
+  }
+
   @override
-  Future<void> pause() => _player.pause();
+  Future<void> pause() async => _player?.pause();
+
   @override
-  Future<void> resume() => _player.resume();
+  Future<void> resume() async {
+    final player = _player;
+    if (player == null) return;
+    player.play();
+    _follow(player);
+  }
+
   @override
-  Future<void> stop() => _player.stop();
+  Future<void> stop() async {
+    _poll?.cancel();
+    _player?.close();
+    _player = null;
+  }
+
   @override
-  Future<void> seek(Duration to) => _player.seek(to);
+  Future<void> seek(Duration to) async => _player?.seek(to);
+
   @override
-  Future<void> dispose() => _player.dispose();
+  Future<void> dispose() async {
+    await stop();
+    await _position.close();
+    await _duration.close();
+    await _complete.close();
+  }
 }
+
+Future<Int16List> _decodeOff(Uint8List ogg) => Isolate.run(() => decodeVoice(ogg));
 
 /// The one voice message playing, shared by every bubble: starting another
 /// stops this one, as in any messenger.
 class VoicePlayer extends ChangeNotifier {
-  VoicePlayer({VoiceOutput? output, Future<Uint8List> Function(Uint8List ogg)? decode})
-      : _player = output ?? _Speakers(),
-        _decode = decode ?? voiceToWav {
+  /// [speaker] names the output device each time playing starts.
+  VoicePlayer({VoiceOutput? output, Future<Int16List> Function(Uint8List ogg)? decode, String? Function()? speaker})
+      : _player = output ?? _Speakers(speaker ?? () => null),
+        _decode = decode ?? _decodeOff {
     _subs.addAll([
       _player.onPosition.listen((p) {
         _position = p;
@@ -67,11 +118,11 @@ class VoicePlayer extends ChangeNotifier {
   }
 
   final VoiceOutput _player;
-  final Future<Uint8List> Function(Uint8List ogg) _decode;
+  final Future<Int16List> Function(Uint8List ogg) _decode;
   final _subs = <StreamSubscription<Object?>>[];
 
   /// Decoded messages, so replaying one does not decode it again.
-  final _wav = <String, Uint8List>{};
+  final _pcm = <String, Int16List>{};
 
   String? _current;
   var _playing = false;
@@ -114,10 +165,10 @@ class VoicePlayer extends ChangeNotifier {
     _loading = true;
     notifyListeners();
     try {
-      final wav = _wav[id] ??= await _decode(await ogg());
+      final pcm = _pcm[id] ??= await _decode(await ogg());
       if (_current != id) return; // another was started meanwhile
-      if (_wav.length > 12) _wav.remove(_wav.keys.first);
-      await _player.play(wav);
+      if (_pcm.length > 12) _pcm.remove(_pcm.keys.first);
+      await _player.play(pcm);
       _playing = true;
     } finally {
       if (_current == id) _loading = false;

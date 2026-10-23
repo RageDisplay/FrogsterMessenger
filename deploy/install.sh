@@ -385,9 +385,11 @@ if [[ $NO_FIREWALL -eq 0 ]]; then
 	ufw allow 80/tcp >/dev/null
 	ufw allow 443/tcp >/dev/null
 	ufw allow 443/udp >/dev/null
+	# Voice channels. Without it voice still works, over 443, with more delay.
+	ufw allow 7882/udp >/dev/null
 	ufw --force enable >/dev/null
-	ok "open: ssh ($(echo "$ssh_ports" | tr '\n' ' ' | xargs)), 80, 443"
-	warn "if your provider has its own firewall or security group, open 80 and 443 there too"
+	ok "open: ssh ($(echo "$ssh_ports" | tr '\n' ' ' | xargs)), 80, 443, 7882/udp (voice)"
+	warn "if your provider has its own firewall or security group, open 80, 443 and 7882/udp there too"
 fi
 
 # ------------------------------------------------------------------ start ----

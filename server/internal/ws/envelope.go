@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"encoding/json"
 	"log/slog"
 
 	"github.com/google/uuid"
@@ -38,6 +39,12 @@ const (
 	// may see it: "online", "offline" with the last-seen time in Timestamp,
 	// or a vague "recently", "week", "month" or "long_ago".
 	TypePresence = "presence"
+
+	// TypeVoice tells a group's members who is in its voice channels:
+	// Voice lists every channel with someone in it, and a channel missing
+	// from the list is empty. Kind "channels" says the channels themselves
+	// were added, renamed or removed, so they are fetched again.
+	TypeVoice = "voice"
 )
 
 // SenderKeyAckPrefix marks a sender-key distribution in a delivered frame.
@@ -125,6 +132,9 @@ type Envelope struct {
 	// IDs lists message ids, for frames that refer to several messages at
 	// once (TypeDelivered).
 	IDs []string `json:"ids,omitempty"`
+
+	// Voice carries the channel states of a TypeVoice frame.
+	Voice json.RawMessage `json:"voice,omitempty"`
 
 	// Error carries a human-readable reason for TypeError frames.
 	Error string `json:"error,omitempty"`

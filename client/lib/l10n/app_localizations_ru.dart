@@ -925,4 +925,82 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get previewVoiceShort => 'Голосовое сообщение';
+
+  @override
+  String get speaker => 'Динамик';
+
+  @override
+  String get speakerDefault => 'Как в системе';
+
+  @override
+  String get voiceChannels => 'Голосовые каналы';
+
+  @override
+  String voiceChannelsActive(int count) {
+    return 'Голосовые каналы · в эфире: $count';
+  }
+
+  @override
+  String get voiceJoin => 'Войти';
+
+  @override
+  String get voiceYouAreHere => 'Вы здесь';
+
+  @override
+  String get voiceLeave => 'Выйти из канала';
+
+  @override
+  String get voiceMute => 'Выключить микрофон';
+
+  @override
+  String get voiceUnmute => 'Включить микрофон';
+
+  @override
+  String get voiceDeafen => 'Выключить звук';
+
+  @override
+  String get voiceUndeafen => 'Включить звук';
+
+  @override
+  String get voiceConnecting => 'Подключение…';
+
+  @override
+  String get voiceConnected => 'Подключено';
+
+  @override
+  String get voiceRelayed => 'Подключено через HTTPS-порт сервера';
+
+  @override
+  String voicePing(int ms) {
+    return '$ms мс';
+  }
+
+  @override
+  String get voiceFull => 'В канале нет мест';
+
+  @override
+  String get voiceGone => 'Этого канала больше нет';
+
+  @override
+  String get voiceJoinFailed => 'Не удалось войти в канал';
+
+  @override
+  String get voiceNewChannel => 'Новый голосовой канал';
+
+  @override
+  String get voiceRenameChannel => 'Переименовать';
+
+  @override
+  String get voiceDeleteChannel => 'Удалить';
+
+  @override
+  String get voiceManageChannel => 'Действия с каналом';
+
+  @override
+  String get voiceChannelNameHint => 'Например, Общий';
+
+  @override
+  String voiceInChat(int count) {
+    return 'в голосовом: $count';
+  }
 }

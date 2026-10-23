@@ -1699,6 +1699,150 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Voice message'**
   String get previewVoiceShort;
+
+  /// No description provided for @speaker.
+  ///
+  /// In en, this message translates to:
+  /// **'Speaker'**
+  String get speaker;
+
+  /// No description provided for @speakerDefault.
+  ///
+  /// In en, this message translates to:
+  /// **'System default'**
+  String get speakerDefault;
+
+  /// No description provided for @voiceChannels.
+  ///
+  /// In en, this message translates to:
+  /// **'Voice channels'**
+  String get voiceChannels;
+
+  /// No description provided for @voiceChannelsActive.
+  ///
+  /// In en, this message translates to:
+  /// **'Voice channels · {count} talking'**
+  String voiceChannelsActive(int count);
+
+  /// No description provided for @voiceJoin.
+  ///
+  /// In en, this message translates to:
+  /// **'Join'**
+  String get voiceJoin;
+
+  /// No description provided for @voiceYouAreHere.
+  ///
+  /// In en, this message translates to:
+  /// **'You are here'**
+  String get voiceYouAreHere;
+
+  /// No description provided for @voiceLeave.
+  ///
+  /// In en, this message translates to:
+  /// **'Leave the channel'**
+  String get voiceLeave;
+
+  /// No description provided for @voiceMute.
+  ///
+  /// In en, this message translates to:
+  /// **'Turn the microphone off'**
+  String get voiceMute;
+
+  /// No description provided for @voiceUnmute.
+  ///
+  /// In en, this message translates to:
+  /// **'Turn the microphone on'**
+  String get voiceUnmute;
+
+  /// No description provided for @voiceDeafen.
+  ///
+  /// In en, this message translates to:
+  /// **'Turn the sound off'**
+  String get voiceDeafen;
+
+  /// No description provided for @voiceUndeafen.
+  ///
+  /// In en, this message translates to:
+  /// **'Turn the sound on'**
+  String get voiceUndeafen;
+
+  /// No description provided for @voiceConnecting.
+  ///
+  /// In en, this message translates to:
+  /// **'Connecting…'**
+  String get voiceConnecting;
+
+  /// No description provided for @voiceConnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Connected'**
+  String get voiceConnected;
+
+  /// No description provided for @voiceRelayed.
+  ///
+  /// In en, this message translates to:
+  /// **'Connected through the server\'s HTTPS port'**
+  String get voiceRelayed;
+
+  /// No description provided for @voicePing.
+  ///
+  /// In en, this message translates to:
+  /// **'{ms} ms'**
+  String voicePing(int ms);
+
+  /// No description provided for @voiceFull.
+  ///
+  /// In en, this message translates to:
+  /// **'The channel is full'**
+  String get voiceFull;
+
+  /// No description provided for @voiceGone.
+  ///
+  /// In en, this message translates to:
+  /// **'This channel no longer exists'**
+  String get voiceGone;
+
+  /// No description provided for @voiceJoinFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not join the channel'**
+  String get voiceJoinFailed;
+
+  /// No description provided for @voiceNewChannel.
+  ///
+  /// In en, this message translates to:
+  /// **'New voice channel'**
+  String get voiceNewChannel;
+
+  /// No description provided for @voiceRenameChannel.
+  ///
+  /// In en, this message translates to:
+  /// **'Rename'**
+  String get voiceRenameChannel;
+
+  /// No description provided for @voiceDeleteChannel.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete'**
+  String get voiceDeleteChannel;
+
+  /// No description provided for @voiceManageChannel.
+  ///
+  /// In en, this message translates to:
+  /// **'Channel options'**
+  String get voiceManageChannel;
+
+  /// No description provided for @voiceChannelNameHint.
+  ///
+  /// In en, this message translates to:
+  /// **'For example, General'**
+  String get voiceChannelNameHint;
+
+  /// No description provided for @voiceInChat.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} in voice'**
+  String voiceInChat(int count);
 }
 
 class _AppLocalizationsDelegate

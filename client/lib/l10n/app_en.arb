@@ -465,5 +465,50 @@
   "micTestHint": "Records three seconds and plays them back as others will hear you",
   "micTestRecording": "Speak now…",
   "micTestPlaying": "Playing back…",
-  "previewVoiceShort": "Voice message"
+  "previewVoiceShort": "Voice message",
+  "speaker": "Speaker",
+  "speakerDefault": "System default",
+  "voiceChannels": "Voice channels",
+  "voiceChannelsActive": "Voice channels · {count} talking",
+  "@voiceChannelsActive": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "voiceJoin": "Join",
+  "voiceYouAreHere": "You are here",
+  "voiceLeave": "Leave the channel",
+  "voiceMute": "Turn the microphone off",
+  "voiceUnmute": "Turn the microphone on",
+  "voiceDeafen": "Turn the sound off",
+  "voiceUndeafen": "Turn the sound on",
+  "voiceConnecting": "Connecting…",
+  "voiceConnected": "Connected",
+  "voiceRelayed": "Connected through the server's HTTPS port",
+  "voicePing": "{ms} ms",
+  "@voicePing": {
+    "placeholders": {
+      "ms": {
+        "type": "int"
+      }
+    }
+  },
+  "voiceFull": "The channel is full",
+  "voiceGone": "This channel no longer exists",
+  "voiceJoinFailed": "Could not join the channel",
+  "voiceNewChannel": "New voice channel",
+  "voiceRenameChannel": "Rename",
+  "voiceDeleteChannel": "Delete",
+  "voiceManageChannel": "Channel options",
+  "voiceChannelNameHint": "For example, General",
+  "voiceInChat": "{count} in voice",
+  "@voiceInChat": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  }
 }

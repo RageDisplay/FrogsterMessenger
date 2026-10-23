@@ -44,6 +44,10 @@ const (
 	PurposeMessage = "msg"
 	PurposeTitle   = "title"
 	PurposeAvatar  = "avatar"
+
+	// PurposeVoiceChannel prefixes the channel's id, binding a name to its
+	// channel: one channel's name cannot be moved onto another's row.
+	PurposeVoiceChannel = "voice/"
 )
 
 // ErrOpen is returned when a value fails to authenticate: it was tampered

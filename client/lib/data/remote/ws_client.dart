@@ -40,6 +40,10 @@ class EnvelopeType {
   /// Presence: from us, whether this device is in the foreground; from the
   /// server, a contact's status as we may see it.
   static const presence = 'presence';
+
+  /// Who is in a group's voice channels now; kind "channels" when the
+  /// channels themselves changed.
+  static const voice = 'voice';
 }
 
 /// Errors the server reports in a way the client can act on, mirroring
@@ -111,6 +115,7 @@ class Envelope {
     this.kind,
     this.targetId,
     this.emoji,
+    this.voice,
   });
 
   final int version;
@@ -154,6 +159,9 @@ class Envelope {
   final String? kind;
   final String? targetId;
   final String? emoji;
+
+  /// A `voice` frame's channels, each with who is in it, as JSON.
+  final List<dynamic>? voice;
 
   Map<String, dynamic> toJson() => {
         'v': version,
@@ -202,6 +210,7 @@ class Envelope {
       kind: json['kind'] as String?,
       targetId: json['target_id'] as String?,
       emoji: json['emoji'] as String?,
+      voice: json['voice'] as List<dynamic>?,
     );
   }
 }

@@ -10,6 +10,8 @@ import '../../crypto/crypto_engine.dart';
 import '../../crypto/primitives.dart';
 import '../../crypto/x3dh.dart';
 import '../models/models.dart';
+import '../voice/voice_controller.dart' show VoiceApi;
+import '../voice/voice_models.dart';
 import 'server_config.dart';
 
 /// Raised for any non-success response.
@@ -202,7 +204,7 @@ class RemoteMessage {
       );
 }
 
-class ApiClient {
+class ApiClient implements VoiceApi {
   ApiClient({required this.server, HttpClient? httpClient})
       : _http = httpClient ?? server.httpClient();
 
@@ -563,6 +565,53 @@ class ApiClient {
     ];
   }
 
+  /// A cloud group's voice channels, with who is in each.
+  @override
+  Future<List<VoiceChannel>> voiceChannels(String chatId) async {
+    final json = await _get('/v1/chats/$chatId/voice');
+    return [
+      for (final c in (json['channels'] as List<dynamic>? ?? const []))
+        VoiceChannel.fromJson(c as Map<String, dynamic>),
+    ];
+  }
+
+  /// Admins only.
+  @override
+  Future<VoiceChannel> createVoiceChannel(String chatId, String name) async =>
+      VoiceChannel.fromJson(await _post('/v1/chats/$chatId/voice', {'name': name}));
+
+  @override
+  Future<void> renameVoiceChannel(String chatId, String channelId, String name) =>
+      _send('PATCH', '/v1/chats/$chatId/voice/$channelId', {'name': name});
+
+  @override
+  Future<void> deleteVoiceChannel(String chatId, String channelId) =>
+      _delete('/v1/chats/$chatId/voice/$channelId');
+
+  /// Puts this device in a channel, out of any other.
+  @override
+  Future<VoiceGrant> joinVoice(String chatId, String channelId) async =>
+      VoiceGrant.fromJson(await _post('/v1/chats/$chatId/voice/$channelId/join', const {}));
+
+  @override
+  Future<void> leaveVoice() => _post('/v1/voice/leave', const {});
+
+  @override
+  Future<void> setVoiceState({required bool muted, required bool deafened}) =>
+      _post('/v1/voice/state', {'muted': muted, 'deafened': deafened});
+
+  /// For each of our groups with someone in a channel, who is where.
+  @override
+  Future<Map<String, List<VoiceRoom>>> activeVoice() async {
+    final json = await _get('/v1/voice');
+    return {
+      for (final c in (json['chats'] as List<dynamic>? ?? const []))
+        (c as Map<String, dynamic>)['chat_id'] as String: [
+          for (final r in (c['rooms'] as List<dynamic>? ?? const [])) VoiceRoom.fromJson(r as Map<String, dynamic>),
+        ],
+    };
+  }
+
   Future<List<DeviceSession>> sessions() async {
     final json = await _get('/v1/sessions');
     return (json['sessions'] as List<dynamic>).map((raw) {
@@ -676,12 +725,16 @@ class ApiClient {
     final uri = Uri.parse('$baseUrl$path');
     final request = await _http.openUrl(method, uri);
 
-    request.headers.set(HttpHeaders.contentTypeHeader, 'application/json');
+    request.headers.set(HttpHeaders.contentTypeHeader, 'application/json; charset=utf-8');
     if (authenticated && accessToken != null) {
       request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $accessToken');
     }
     if (body != null) {
-      request.write(jsonEncode(body));
+      // Bytes, not write(): write() encodes as the header's charset, and
+      // without one that is Latin-1, which cannot carry a Russian title.
+      final bytes = utf8.encode(jsonEncode(body));
+      request.contentLength = bytes.length;
+      request.add(bytes);
     }
 
     final response = await request.close();

@@ -13,6 +13,9 @@ const int frameSamples = 480;
 /// The one sample rate used throughout: RNNoise's, and Opus's full band.
 const int sampleRate = 48000;
 
+/// The library, for the other files of this package.
+DynamicLibrary get audioLibrary => _lib;
+
 final DynamicLibrary _lib = () {
   // Tests on a PC load the library straight from a build folder.
   final override = Platform.environment['FROGSTER_AUDIO_LIB'];

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -55,6 +56,12 @@ type Config struct {
 	// install time and never rotated by the installer.
 	StorageKey []byte
 
+	// VoiceUDPAddr is where voice channels take sound over UDP; "off" leaves
+	// only the WebSocket path. VoicePublicPort is the port clients are told
+	// to send to, when a NAT or container maps it to another.
+	VoiceUDPAddr    string
+	VoicePublicPort int
+
 	LogLevel slog.Level
 }
 
@@ -77,6 +84,19 @@ func Load() (*Config, error) {
 		AllowedOrigins:  splitList(os.Getenv("FROGSTER_ALLOWED_ORIGINS")),
 		TrustedProxies:  splitList(os.Getenv("FROGSTER_TRUSTED_PROXIES")),
 		QueueRetention:  envDuration("FROGSTER_QUEUE_RETENTION", 30*24*time.Hour, &errs),
+		VoiceUDPAddr:    env("FROGSTER_VOICE_UDP", ":7882"),
+		VoicePublicPort: envInt("FROGSTER_VOICE_PUBLIC_PORT", 0, &errs),
+	}
+	if c.VoiceUDPAddr != "off" && c.VoicePublicPort == 0 {
+		_, port, err := net.SplitHostPort(c.VoiceUDPAddr)
+		if n, convErr := strconv.Atoi(port); err != nil || convErr != nil || n <= 0 || n > 65535 {
+			errs = append(errs, fmt.Errorf("FROGSTER_VOICE_UDP: %q is not host:port or \"off\"", c.VoiceUDPAddr))
+		} else {
+			c.VoicePublicPort = n
+		}
+	}
+	if c.VoicePublicPort < 0 || c.VoicePublicPort > 65535 {
+		errs = append(errs, fmt.Errorf("FROGSTER_VOICE_PUBLIC_PORT: %d is not a port", c.VoicePublicPort))
 	}
 
 	switch c.Env {

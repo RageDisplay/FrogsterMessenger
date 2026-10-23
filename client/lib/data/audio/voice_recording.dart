@@ -6,11 +6,9 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:frogster_audio/frogster_audio.dart';
-import 'package:record/record.dart';
 
 import '../local/preferences.dart';
-
-export 'package:record/record.dart' show InputDevice;
+import 'audio_platform.dart';
 
 /// Why recording could not start.
 enum RecordingProblem { permission, noMicrophone, failed }
@@ -26,37 +24,22 @@ class RecordingException implements Exception {
 }
 
 /// The microphones this device has.
-Future<List<InputDevice>> listMicrophones() async {
-  final recorder = AudioRecorder();
-  try {
-    return await recorder.listInputDevices();
-  } finally {
-    await recorder.dispose();
-  }
-}
+Future<List<AudioDevice>> listMicrophones([AudioPlatform platform = const NativeAudioPlatform()]) =>
+    platform.devices(capture: true);
 
-/// The settings a recording runs with: the microphone, and what is done to
-/// the sound.
-RecordConfig recordConfigFor(AppPreferences prefs, {bool nativeDenoise = true}) => RecordConfig(
-      encoder: AudioEncoder.pcm16bits,
-      sampleRate: sampleRate,
-      numChannels: 1,
-      device: prefs.microphone == null ? null : InputDevice(id: prefs.microphone!, label: ''),
-      // The platform's own suppression only where ours cannot run: doing
-      // both makes speech sound underwater.
-      noiseSuppress: prefs.noiseSuppression && !nativeDenoise,
-      autoGain: prefs.autoGain,
-      echoCancel: false,
-    );
+/// The speakers and headphones this device has.
+Future<List<AudioDevice>> listSpeakers([AudioPlatform platform = const NativeAudioPlatform()]) =>
+    platform.devices(capture: false);
 
 /// One voice message being recorded.
 class VoiceRecording {
-  VoiceRecording._(this._recorder, this._pipeline);
+  VoiceRecording._(this._mic, this._pipeline) {
+    _ticker = Timer.periodic(const Duration(milliseconds: 40), (_) => _drain());
+  }
 
-  final AudioRecorder _recorder;
+  final MicCapture _mic;
   final VoiceMessageRecorder _pipeline;
-  StreamSubscription<Uint8List>? _sub;
-  Timer? _ticker;
+  late final Timer _ticker;
 
   /// Loudness right now, 0 to 1, for the level meter.
   final level = ValueNotifier<double>(0);
@@ -67,42 +50,38 @@ class VoiceRecording {
   var _done = false;
 
   /// Starts recording, asking for the microphone the first time.
-  static Future<VoiceRecording> start(AppPreferences prefs) async {
-    final recorder = AudioRecorder();
-    try {
-      if (!await recorder.hasPermission()) {
-        throw const RecordingException(RecordingProblem.permission);
-      }
-      final native = nativeAudioAvailable;
-      final pipeline = VoiceMessageRecorder(
-        denoise: prefs.noiseSuppression && native,
-        normalize: prefs.autoGain,
-      );
-      final recording = VoiceRecording._(recorder, pipeline);
-      final stream = await recorder.startStream(recordConfigFor(prefs, nativeDenoise: native));
-      recording._sub = stream.listen(pipeline.add);
-      recording._ticker = Timer.periodic(const Duration(milliseconds: 80), (_) {
-        recording.level.value = pipeline.level;
-        recording.elapsed.value = pipeline.elapsed;
-      });
-      return recording;
-    } on RecordingException {
-      await recorder.dispose();
-      rethrow;
-    } catch (e) {
-      await recorder.dispose();
-      throw RecordingException(RecordingProblem.failed, e);
+  static Future<VoiceRecording> start(AppPreferences prefs,
+      {AudioPlatform platform = const NativeAudioPlatform()}) async {
+    if (!await platform.requestMicrophone()) {
+      throw const RecordingException(RecordingProblem.permission);
     }
+    if (!nativeAudioAvailable) throw const RecordingException(RecordingProblem.failed);
+    final MicCapture mic;
+    try {
+      mic = MicCapture(deviceId: prefs.microphone);
+    } on AudioDeviceException catch (e) {
+      throw RecordingException(RecordingProblem.noMicrophone, e);
+    }
+    return VoiceRecording._(
+      mic,
+      VoiceMessageRecorder(denoise: prefs.noiseSuppression, normalize: prefs.autoGain),
+    );
+  }
+
+  void _drain() {
+    if (_done) return;
+    _pipeline.addSamples(_mic.read());
+    level.value = _pipeline.level;
+    elapsed.value = _pipeline.elapsed;
   }
 
   /// Stops and makes the message; null when it was too short to be one.
   Future<VoiceClip?> finish() async {
     if (_done) return null;
+    _drain();
     _done = true;
-    await _recorder.stop();
-    await _sub?.cancel();
-    _ticker?.cancel();
-    await _recorder.dispose();
+    _ticker.cancel();
+    _mic.close();
     return _pipeline.finish();
   }
 
@@ -113,10 +92,8 @@ class VoiceRecording {
   Future<void> cancel() async {
     if (_done) return;
     _done = true;
-    _ticker?.cancel();
-    await _sub?.cancel();
-    await _recorder.cancel();
-    await _recorder.dispose();
+    _ticker.cancel();
+    _mic.close();
     _pipeline.cancel();
   }
 

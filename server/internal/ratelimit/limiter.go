@@ -63,4 +63,8 @@ var (
 
 	// RuleAvatar bounds avatar uploads: a few tries at a new picture.
 	RuleAvatar = Rule{Burst: 10, Rate: 10, Period: time.Hour}
+
+	// RuleVoiceMedia bounds opening voice media sockets from one address:
+	// a client opens one per join, and reconnects after a network change.
+	RuleVoiceMedia = Rule{Burst: 20, Rate: 20, Period: time.Minute}
 )

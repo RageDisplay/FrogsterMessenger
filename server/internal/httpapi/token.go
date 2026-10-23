@@ -101,6 +101,9 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error", s.log)
 		return
 	}
+	if s.voice != nil {
+		s.voice.RemoveDevice(claims.DeviceID)
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged_out"}, s.log)
 }
 
@@ -152,6 +155,9 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user.TokenVersion = version
+	if s.voice != nil {
+		s.voice.RemoveUserDevices(user.ID, claims.DeviceID)
+	}
 
 	device, err := s.store.DeviceByID(r.Context(), claims.DeviceID)
 	if err != nil {

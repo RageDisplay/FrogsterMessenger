@@ -69,6 +69,13 @@ class VoiceMessageRecorder {
     if (i < chunk.length) _carry = chunk[i];
   }
 
+  /// Adds samples as they are.
+  void addSamples(Int16List samples) {
+    for (final s in samples) {
+      _push(s);
+    }
+  }
+
   static int _toInt16(int lo, int hi) {
     final v = lo | (hi << 8);
     return v >= 0x8000 ? v - 0x10000 : v;

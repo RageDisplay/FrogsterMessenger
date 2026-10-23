@@ -75,6 +75,10 @@ func (s *Server) handleRevokeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.voice != nil {
+		s.voice.RemoveDevice(deviceID)
+	}
+
 	// The revoked device's peers keep sessions with it; telling them lets
 	// clients drop that state instead of encrypting to a device that can no
 	// longer read anything. This is the device id, not the session id: peers

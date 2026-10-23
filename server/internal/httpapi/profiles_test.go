@@ -76,9 +76,11 @@ func TestUserAvatar(t *testing.T) {
 	}
 
 	// Sealed at rest.
-	var stored []byte
-	f.st.DB().Raw(`SELECT data FROM avatars WHERE owner_id = ?`, alice.id).Scan(&stored)
-	if len(stored) == 0 || bytes.Contains(stored, png[:8]) {
+	var stored struct{ Data []byte }
+	if err := f.st.DB().Raw(`SELECT data FROM avatars WHERE owner_id = ?`, alice.id).Scan(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Data) == 0 || bytes.Contains(stored.Data, png[:8]) {
 		t.Fatal("the avatar is stored in the clear")
 	}
 
